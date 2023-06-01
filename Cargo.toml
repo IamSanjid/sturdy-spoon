@@ -1,0 +1,24 @@
+[package]
+name = "sturdy-spoon"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+axum = { version = "0.6.18", features = ["ws", "headers"] }
+base64 = "0.21.2"
+byteorder = "1.4.3"
+futures = "0.3.28"
+futures-util = { version = "0.3.28", default-features = false, features = ["sink", "std"] }
+http = "0.2.9"
+hyper = "0.14.26"
+log = "0.4.18"
+rand = "0.8.5"
+sha1 = "0.10.5"
+thiserror = "1.0.40"
+tokio = { version = "1.28.0", features = ["full"] }
+tokio-tungstenite = "0.18.0"
+tower = { version = "0.4.13", features = ["util"] }
+tower-http = { version = "0.4.0", features = ["fs"] }
+utf-8 = "0.7.6"
