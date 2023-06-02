@@ -5,8 +5,8 @@ use std::{
     str,
 };
 
-use super::frame::{CloseFrame, Frame};
 use super::error::{self, CapacityError, Error, Result};
+use super::frame::{CloseFrame, Frame};
 
 mod string_collect {
     use utf8::DecodeError;
@@ -21,7 +21,10 @@ mod string_collect {
 
     impl StringCollector {
         pub fn new() -> Self {
-            StringCollector { data: String::new(), incomplete: None }
+            StringCollector {
+                data: String::new(),
+                incomplete: None,
+            }
         }
 
         pub fn len(&self) -> usize {
@@ -53,7 +56,10 @@ mod string_collect {
                         self.data.push_str(text);
                         Ok(())
                     }
-                    Err(DecodeError::Incomplete { valid_prefix, incomplete_suffix }) => {
+                    Err(DecodeError::Incomplete {
+                        valid_prefix,
+                        incomplete_suffix,
+                    }) => {
                         self.data.push_str(valid_prefix);
                         self.incomplete = Some(incomplete_suffix);
                         Ok(())

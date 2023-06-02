@@ -8,13 +8,27 @@
 //! Each WebSocket stream implements the required `Stream` and `Sink` traits,
 //! so the socket is just a stream of messages coming in and going out.
 
-#![deny(missing_docs, unused_must_use, unused_mut, unused_imports, unused_import_braces)]
+#![deny(
+    missing_docs,
+    unused_must_use,
+    unused_mut,
+    unused_imports,
+    unused_import_braces
+)]
 use std::io::{Read, Write};
 
 use super::compat::{cvt, AllowStd, ContextWaker};
+use super::sturdy_tungstenite::{
+    self as tungstenite,
+    error::Error as WsError,
+    protocol::{Message, Role, WebSocket, WebSocketConfig},
+};
+use futures_util::lock::BiLock;
+use futures_util::ready;
 use futures_util::{
     sink::{Sink, SinkExt},
-    stream::{FusedStream, Stream}, Future,
+    stream::{FusedStream, Stream},
+    Future,
 };
 use log::*;
 use std::{
@@ -22,11 +36,6 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use super::sturdy_tungstenite::{
-    self as tungstenite,
-    error::Error as WsError,
-    protocol::{Message, Role, WebSocket, WebSocketConfig},
-};
 
 use super::sturdy_tungstenite::protocol::CloseFrame;
 
@@ -77,7 +86,11 @@ impl<S> WebSocketStream<S> {
     }
 
     pub(crate) fn new(ws: WebSocket<AllowStd<S>>) -> Self {
-        WebSocketStream { inner: ws, closing: false, ended: false }
+        WebSocketStream {
+            inner: ws,
+            closing: false,
+            ended: false,
+        }
     }
 
     fn with_context<F, R>(&mut self, ctx: Option<(ContextWaker, &mut Context<'_>)>, f: F) -> R
@@ -90,6 +103,16 @@ impl<S> WebSocketStream<S> {
         if let Some((kind, ctx)) = ctx {
             self.inner.get_mut().set_waker(kind, ctx.waker());
         }
+        f(&mut self.inner)
+    }
+
+    fn with_raw_context<F, R>(&mut self, f: F) -> R
+    where
+        S: Unpin,
+        F: FnOnce(&mut WebSocket<AllowStd<S>>) -> R,
+        AllowStd<S>: Read + Write,
+    {
+        trace!("{}:{} WebSocketStream.with_raw_context", file!(), line!());
         f(&mut self.inner)
     }
 
@@ -120,7 +143,16 @@ impl<S> WebSocketStream<S> {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let msg = msg.map(|msg| msg.into_owned());
+        //let frame: Frame = Message::Close(msg).into();
+        //self.inner.write_raw(frame.into())
         self.send(Message::Close(msg)).await
+    }
+
+    pub fn write_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        self.inner.write_raw(bytes)
     }
 }
 
@@ -141,7 +173,11 @@ where
         }
 
         match futures_util::ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
-            trace!("{}:{} Stream.with_context poll_next -> read_message()", file!(), line!());
+            trace!(
+                "{}:{} Stream.with_context poll_next -> read_message()",
+                file!(),
+                line!()
+            );
             cvt(s.read_message())
         })) {
             Ok(v) => Poll::Ready(Some(Ok(v))),
@@ -219,60 +255,6 @@ where
     }
 }
 
-impl<T, B> Sink<B> for WebSocketStream<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
-    B: AsRef<[u8]>
-{
-    type Error = WsError;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self).with_context(Some((ContextWaker::Write, cx)), |s| cvt(s.write_pending()))
-    }
-
-    fn start_send(mut self: Pin<&mut Self>, item: B) -> Result<(), Self::Error> {
-        match (*self).with_context(None, |s| s.write_raw(item)) {
-            Ok(()) => Ok(()),
-            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                // the message was accepted and queued
-                // isn't an error.
-                Ok(())
-            }
-            Err(e) => {
-                debug!("websocket start_send error: {}", e);
-                Err(e)
-            }
-        }
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self).with_context(Some((ContextWaker::Write, cx)), |s| cvt(s.write_pending()))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        let res = if self.closing {
-            // After queueing it, we call `write_pending` to drive the close handshake to completion.
-            (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.write_pending())
-        } else {
-            (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.close(None))
-        };
-
-        match res {
-            Ok(()) => Poll::Ready(Ok(())),
-            Err(tungstenite::Error::ConnectionClosed) => Poll::Ready(Ok(())),
-            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                trace!("WouldBlock");
-                self.closing = true;
-                Poll::Pending
-            }
-            Err(err) => {
-                debug!("websocket close error: {}", err);
-                Poll::Ready(Err(err))
-            }
-        }
-    }
-}
-
 pub(crate) async fn without_handshake<F, S>(stream: S, f: F) -> WebSocketStream<S>
 where
     F: FnOnce(AllowStd<S>) -> WebSocket<AllowStd<S>> + Unpin,
@@ -300,10 +282,26 @@ where
     type Output = WebSocket<AllowStd<S>>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        let inner = self.get_mut().0.take().expect("future polled after completion");
+        let inner = self
+            .get_mut()
+            .0
+            .take()
+            .expect("future polled after completion");
         trace!("Setting context when skipping handshake");
         let stream = AllowStd::new(inner.stream, ctx.waker());
 
         Poll::Ready((inner.f)(stream))
+    }
+}
+
+pub struct SplitStream<S>(pub(super) BiLock<S>);
+
+impl<S> Unpin for SplitStream<S> {}
+
+impl<S: Stream> Stream for SplitStream<S> {
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
+        ready!(self.0.poll_lock(cx)).as_pin_mut().poll_next(cx)
     }
 }

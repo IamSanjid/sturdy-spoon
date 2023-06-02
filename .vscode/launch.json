@@ -1,0 +1,47 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'sturdy-spoon'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=sturdy-spoon",
+                    "--package=sturdy-spoon"
+                ],
+                "filter": {
+                    "name": "sturdy-spoon",
+                    "kind": "bin"
+                }
+            },
+            "terminal": "external",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'sturdy-spoon'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=sturdy-spoon",
+                    "--package=sturdy-spoon"
+                ],
+                "filter": {
+                    "name": "sturdy-spoon",
+                    "kind": "bin"
+                }
+            },
+            "terminal": "external",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

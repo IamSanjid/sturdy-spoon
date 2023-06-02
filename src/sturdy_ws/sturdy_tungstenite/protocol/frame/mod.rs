@@ -28,12 +28,18 @@ pub struct FrameSocket<Stream> {
 impl<Stream> FrameSocket<Stream> {
     /// Create a new frame socket.
     pub fn new(stream: Stream) -> Self {
-        FrameSocket { stream, codec: FrameCodec::new() }
+        FrameSocket {
+            stream,
+            codec: FrameCodec::new(),
+        }
     }
 
     /// Create a new frame socket from partially read data.
     pub fn from_partially_read(stream: Stream, part: Vec<u8>) -> Self {
-        FrameSocket { stream, codec: FrameCodec::from_partially_read(part) }
+        FrameSocket {
+            stream,
+            codec: FrameCodec::from_partially_read(part),
+        }
     }
 
     /// Extract a stream from the socket.
@@ -95,7 +101,11 @@ pub(super) struct FrameCodec {
 impl FrameCodec {
     /// Create a new frame codec.
     pub(super) fn new() -> Self {
-        Self { in_buffer: ReadBuffer::new(), out_buffer: Vec::new(), header: None }
+        Self {
+            in_buffer: ReadBuffer::new(),
+            out_buffer: Vec::new(),
+            header: None,
+        }
     }
 
     /// Create a new frame codec from partially read data.
@@ -172,17 +182,21 @@ impl FrameCodec {
     {
         trace!("writing frame {}", frame);
         self.out_buffer.reserve(frame.len());
-        frame.format(&mut self.out_buffer).expect("Bug: can't write to vector");
+        frame
+            .format(&mut self.out_buffer)
+            .expect("Bug: can't write to vector");
         self.write_pending(stream)
     }
-    
+
     pub(super) fn write_raw<Stream>(&mut self, stream: &mut Stream, bytes: &[u8]) -> Result<()>
     where
         Stream: Write,
     {
         trace!("writing bytes {}", bytes.len());
         self.out_buffer.reserve(bytes.len());
-        self.out_buffer.write_all(bytes).expect("Bug: can't write to vector");
+        self.out_buffer
+            .write_all(bytes)
+            .expect("Bug: can't write to vector");
         self.write_pending(stream)
     }
 
