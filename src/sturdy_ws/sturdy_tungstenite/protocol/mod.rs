@@ -89,7 +89,10 @@ impl<Stream> WebSocket<Stream> {
     /// or together with an existing one. If you need an initial handshake, use
     /// `connect()` or `accept()` functions of the crate to construct a websocket.
     pub fn from_raw_socket(stream: Stream, role: Role, config: Option<WebSocketConfig>) -> Self {
-        WebSocket { socket: stream, context: WebSocketContext::new(role, config) }
+        WebSocket {
+            socket: stream,
+            context: WebSocketContext::new(role, config),
+        }
     }
 
     /// Convert a raw socket into a WebSocket without performing a handshake.
@@ -193,9 +196,9 @@ impl<Stream: Read + Write> WebSocket<Stream> {
     pub fn write_message(&mut self, message: Message) -> Result<()> {
         self.context.write_message(&mut self.socket, message)
     }
-    
+
     pub fn write_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<()> {
-        self.context.write_raw(&mut self.socket, bytes.as_ref())  
+        self.context.write_raw(&mut self.socket, bytes.as_ref())
     }
 
     /// Flush the pending send queue.
@@ -318,7 +321,7 @@ impl WebSocketContext {
             }
         }
     }
-    
+
     pub fn write_raw<Stream>(&mut self, stream: &mut Stream, bytes: &[u8]) -> Result<()>
     where
         Stream: Read + Write,
@@ -343,7 +346,7 @@ impl WebSocketContext {
                 return Err(Error::SendQueueFull2);
             }
         }
-        
+
         // First, make sure we have no pending frame sending.
         self.frame.write_pending(stream)?;
 
@@ -664,7 +667,9 @@ impl WebSocketContext {
         }
 
         trace!("Sending frame: {:?}", frame);
-        self.frame.write_frame(stream, frame).check_connection_reset(self.state)
+        self.frame
+            .write_frame(stream, frame)
+            .check_connection_reset(self.state)
     }
 }
 

@@ -5,10 +5,10 @@ use std::{
     task::{Context, Poll},
 };
 
+use super::sturdy_tungstenite::Error as WsError;
 use futures_util::task;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use super::sturdy_tungstenite::Error as WsError;
 
 pub(crate) enum ContextWaker {
     Read,
@@ -149,7 +149,11 @@ where
         trace!("{}:{} Read.read", file!(), line!());
         let mut buf = ReadBuf::new(buf);
         match self.with_context(ContextWaker::Read, |ctx, stream| {
-            trace!("{}:{} Read.with_context read -> poll_read", file!(), line!());
+            trace!(
+                "{}:{} Read.with_context read -> poll_read",
+                file!(),
+                line!()
+            );
             stream.poll_read(ctx, &mut buf)
         }) {
             Poll::Ready(Ok(_)) => Ok(buf.filled().len()),
@@ -166,7 +170,11 @@ where
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         trace!("{}:{} Write.write", file!(), line!());
         match self.with_context(ContextWaker::Write, |ctx, stream| {
-            trace!("{}:{} Write.with_context write -> poll_write", file!(), line!());
+            trace!(
+                "{}:{} Write.with_context write -> poll_write",
+                file!(),
+                line!()
+            );
             stream.poll_write(ctx, buf)
         }) {
             Poll::Ready(r) => r,
@@ -177,7 +185,11 @@ where
     fn flush(&mut self) -> std::io::Result<()> {
         trace!("{}:{} Write.flush", file!(), line!());
         match self.with_context(ContextWaker::Write, |ctx, stream| {
-            trace!("{}:{} Write.with_context flush -> poll_flush", file!(), line!());
+            trace!(
+                "{}:{} Write.with_context flush -> poll_flush",
+                file!(),
+                line!()
+            );
             stream.poll_flush(ctx)
         }) {
             Poll::Ready(r) => r,
