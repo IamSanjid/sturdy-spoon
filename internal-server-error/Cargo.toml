@@ -1,0 +1,13 @@
+[package]
+name = "internal_server_error"
+version = "0.0.1"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+proc-macro2 = "1.0.59"
+quote = "1.0.28"
+syn = "2.0.18"
+[lib]
+proc-macro = true

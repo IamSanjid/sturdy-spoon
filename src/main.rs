@@ -7,90 +7,33 @@ use axum::{
     TypedHeader,
 };
 
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
 use http::StatusCode;
 use tokio;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tower_http::services::ServeDir;
 
+mod common;
 mod server_state;
 pub mod sturdy_ws;
+mod web;
+mod ws_handler;
 
 use server_state::ServerState;
 use sturdy_ws::{Message, WebSocket, WebSocketUpgrade};
 
-use crate::sturdy_ws::Frame;
-
-type WSender = UnboundedSender<(WebSocket, SocketAddr)>;
-type WReciever = UnboundedReceiver<(WebSocket, SocketAddr)>;
-type WSMsgReciever = UnboundedReceiver<Message>;
-
-async fn handle(mut rx: WReciever, mut msg_rx: WSMsgReciever) {
-    let mut senders = Vec::new();
-    loop {
-        tokio::select! {
-            msg = rx.recv() => {
-                match msg {
-                    Some((mut socket, who)) => {
-                        client_handler(&mut socket, who).await;
-                        //let (sender, _) = socket.split::<&[u8]>();
-                        let (sender, mut receiver) = socket.split();
-                        senders.push(sender);
-                        tokio::spawn(async move {
-                            while let Some(Ok(msg)) = receiver.next().await {
-                                println!("{}: {:?}", who, msg);
-                            }
-                        });
-                    },
-                    None => break,
-                }
-            },
-            send_msg = msg_rx.recv() => {
-                match send_msg {
-                    Some(msg) => {
-                        let frame: Frame = msg.into();
-                        let bytes: Vec<u8> = frame.into();
-                        let futures = FuturesUnordered::default();
-                        for socket in &mut senders {
-                            futures.push(async {
-                                socket.lock().await.send_raw(&bytes)
-                            });
-                        }
-                        let _: Vec<_> = futures.collect().await;
-                    },
-                    None => break,
-                }
-            }
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let server_state = ServerState::new();
-    let (tx, rx) = mpsc::unbounded_channel();
-    let (msg_tx, msg_rx) = mpsc::unbounded_channel();
-
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let _ = msg_tx.send(Message::Text("Ping after 5 sec".to_owned()));
-        }
-    });
-
-    tokio::spawn(handle(rx, msg_rx));
-    run_server(server_state, tx).await;
+    run_server(server_state).await;
 }
 
-async fn run_server(_server_state: ServerState, tx: WSender) {
+async fn run_server(state: ServerState) {
     let statics_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("statics");
 
     let app = Router::new()
         .fallback_service(ServeDir::new(statics_dir).append_index_html_on_directories(true))
         .route("/ws", get(ws_handler))
-        .with_state(tx);
-    //.with_state(server_state);
+        .with_state(state.clone())
+        .merge(web::routes(state));
 
     let port = std::env::var("PORT").unwrap_or(String::from("8080"));
     let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
@@ -104,7 +47,7 @@ async fn run_server(_server_state: ServerState, tx: WSender) {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(tx): State<WSender>,
+    State(server): State<ServerState>,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
 ) -> impl IntoResponse {
@@ -115,40 +58,30 @@ async fn ws_handler(
     };
     println!("`{user_agent}` at {addr} connected.");
     ws.on_upgrade(move |socket| async move {
-        let _ = tx.send((socket, addr));
+        let _ = check_join(socket, addr).await;
     })
 }
 
-async fn client_handler(socket: &mut WebSocket, who: SocketAddr) {
+async fn check_join(mut socket: WebSocket, who: SocketAddr) -> Result<(), impl IntoResponse> {
     if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
         println!("Pinged {}...", who);
     } else {
         println!("Could not send ping {}!", who);
-        return;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     if let Some(msg) = socket.recv().await {
         if let Ok(msg) = msg {
             if process_message(msg, who).is_break() {
-                return;
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         } else {
             println!("client {who} abruptly disconnected");
-            return;
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 
-    for i in 1..5 {
-        if socket
-            .send(Message::Text(format!("Hi {i} times!")))
-            .await
-            .is_err()
-        {
-            println!("client {who} abruptly disconnected");
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    return Ok(());
 }
 
 fn process_message(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {

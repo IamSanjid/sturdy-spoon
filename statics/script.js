@@ -22,6 +22,10 @@ window.onload = () => {
             });
             console.log("Sending blob over websocket");
             socket.send(blob);
-        }, 1000);        
+        }, 1000);
+        
+        setInterval(() => {
+            socket.send("Message after 3s from client!");
+        }, 3000);
     }
 };

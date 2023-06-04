@@ -336,10 +336,7 @@ impl WebSocketContext {
 
         if let Some(max_send_queue) = self.config.max_send_queue {
             if self.send_queue.len() >= max_send_queue {
-                // Try to make some room for the new message.
-                // Do not return here if write would block, ignore WouldBlock silently
-                // since we must queue the message anyway.
-                self.write_pending(stream).no_block()?;
+                self.write_pending(stream)?;
             }
 
             if self.send_queue.len() >= max_send_queue {

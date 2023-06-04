@@ -7,15 +7,9 @@
 //!
 //! Each WebSocket stream implements the required `Stream` and `Sink` traits,
 //! so the socket is just a stream of messages coming in and going out.
-
-#![deny(
-    missing_docs,
-    unused_must_use,
-    unused_mut,
-    unused_imports,
-    unused_import_braces
-)]
 use std::io::{Read, Write};
+use std::ops::DerefMut;
+use std::sync::Arc;
 
 use super::compat::{cvt, AllowStd, ContextWaker};
 use super::sturdy_tungstenite::{
@@ -23,12 +17,11 @@ use super::sturdy_tungstenite::{
     error::Error as WsError,
     protocol::{Message, Role, WebSocket, WebSocketConfig},
 };
-use futures_util::lock::BiLock;
 use futures_util::ready;
 use futures_util::{
     sink::{Sink, SinkExt},
     stream::{FusedStream, Stream},
-    Future,
+    Future, FutureExt,
 };
 use log::*;
 use std::{
@@ -36,6 +29,7 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::{Mutex, MutexGuard};
 
 use super::sturdy_tungstenite::protocol::CloseFrame;
 
@@ -294,7 +288,35 @@ where
     }
 }
 
-pub struct SplitStream<S>(pub(super) BiLock<S>);
+trait PollMutexLock {
+    type Item;
+    fn poll_lock<'a>(&'a self, cx: &mut Context<'_>) -> Poll<MutexGuard<'a, Self::Item>>;
+}
+
+impl<T> PollMutexLock for Mutex<T> {
+    type Item = T;
+
+    #[inline(always)]
+    fn poll_lock<'a>(&'a self, cx: &mut Context<'_>) -> Poll<MutexGuard<'a, Self::Item>> {
+        self.lock().boxed_local().poll_unpin(cx)
+    }
+}
+
+trait AsPinMut {
+    type Item;
+    fn as_pin_mut(&mut self) -> Pin<&mut Self::Item>;
+}
+
+impl<'a, T> AsPinMut for MutexGuard<'a, T> {
+    type Item = T;
+
+    #[inline(always)]
+    fn as_pin_mut(&mut self) -> Pin<&mut Self::Item> {
+        unsafe { Pin::new_unchecked(self.deref_mut()) }
+    }
+}
+
+pub struct SplitStream<S>(pub(super) Arc<Mutex<S>>);
 
 impl<S> Unpin for SplitStream<S> {}
 
@@ -304,4 +326,80 @@ impl<S: Stream> Stream for SplitStream<S> {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<S::Item>> {
         ready!(self.0.poll_lock(cx)).as_pin_mut().poll_next(cx)
     }
+}
+
+pub struct SplitSink<S, Item> {
+    lock: Arc<Mutex<S>>,
+    slot: Option<Item>,
+}
+
+impl<S, Item> Unpin for SplitSink<S, Item> {}
+
+impl<S: Sink<Item>, Item> SplitSink<S, Item> {
+    fn poll_flush_slot(
+        mut inner: Pin<&mut S>,
+        slot: &mut Option<Item>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), S::Error>> {
+        if slot.is_some() {
+            ready!(inner.as_mut().poll_ready(cx))?;
+            Poll::Ready(inner.start_send(slot.take().unwrap()))
+        } else {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_lock_and_flush_slot(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), S::Error>> {
+        let this = &mut *self;
+        let mut inner = ready!(this.lock.poll_lock(cx));
+        Self::poll_flush_slot(inner.as_pin_mut(), &mut this.slot, cx)
+    }
+}
+
+impl<S: Sink<Item>, Item> Sink<Item> for SplitSink<S, Item> {
+    type Error = S::Error;
+
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        loop {
+            if self.slot.is_none() {
+                return Poll::Ready(Ok(()));
+            }
+            ready!(self.as_mut().poll_lock_and_flush_slot(cx))?;
+        }
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: Item) -> Result<(), S::Error> {
+        self.slot = Some(item);
+        Ok(())
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        let this = &mut *self;
+        let mut inner = ready!(this.lock.poll_lock(cx));
+        ready!(Self::poll_flush_slot(
+            inner.as_pin_mut(),
+            &mut this.slot,
+            cx
+        ))?;
+        inner.as_pin_mut().poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), S::Error>> {
+        let this = &mut *self;
+        let mut inner = ready!(this.lock.poll_lock(cx));
+        ready!(Self::poll_flush_slot(
+            inner.as_pin_mut(),
+            &mut this.slot,
+            cx
+        ))?;
+        inner.as_pin_mut().poll_close(cx)
+    }
+}
+
+#[allow(non_snake_case)]
+pub(super) fn SplitSink<S: Sink<Item>, Item>(lock: Arc<Mutex<S>>) -> SplitSink<S, Item> {
+    SplitSink { lock, slot: None }
 }

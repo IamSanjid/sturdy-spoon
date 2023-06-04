@@ -37,12 +37,6 @@ pub enum Error {
     /// underlying connection and you should probably consider them fatal.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
-    /// TLS error.
-    ///
-    /// Note that this error variant is enabled unconditionally even if no TLS feature is enabled,
-    /// to provide a feature-agnostic API surface.
-    #[error("TLS error: {0}")]
-    Tls(#[from] TlsError),
     /// - When reading: buffer capacity exhausted.
     /// - When writing: your message is bigger than the configured max message size
     ///   (64MB by default).
@@ -54,6 +48,7 @@ pub enum Error {
     /// Message send queue full.
     #[error("Send queue is full")]
     SendQueueFull(Message),
+    /// Send queue full but doesn't return Message.
     #[error("Send queue is full")]
     SendQueueFull2,
     /// UTF coding error.
@@ -124,17 +119,9 @@ pub enum ProtocolError {
     /// Custom responses must be unsuccessful.
     #[error("Custom response must not be successful")]
     CustomResponseSuccessful,
-    /// Invalid header is passed. Or the header is missing in the request. Or not present at all. Check the request that you pass.
-    #[error("Missing, duplicated or incorrect header {0}")]
-    #[cfg(feature = "handshake")]
-    InvalidHeader(HeaderName),
     /// No more data while still performing handshake.
     #[error("Handshake not finished")]
     HandshakeIncomplete,
-    /// Wrapper around a [`httparse::Error`] value.
-    #[error("httparse error: {0}")]
-    #[cfg(feature = "handshake")]
-    HttparseError(#[from] httparse::Error),
     /// Not allowed to send after having sent a closing frame.
     #[error("Sending after closing is not allowed")]
     SendAfterClosing,
@@ -200,30 +187,4 @@ pub enum UrlError {
     /// The URL does not include a path/query.
     #[error("No path/query in URL")]
     NoPathOrQuery,
-}
-
-/// TLS errors.
-///
-/// Note that even if you enable only the rustls-based TLS support, the error at runtime could still
-/// be `Native`, as another crate in the dependency graph may enable native TLS support.
-#[allow(missing_copy_implementations)]
-#[derive(Error, Debug)]
-#[non_exhaustive]
-pub enum TlsError {
-    /// Native TLS error.
-    #[cfg(feature = "native-tls")]
-    #[error("native-tls error: {0}")]
-    Native(#[from] native_tls_crate::Error),
-    /// Rustls error.
-    #[cfg(feature = "__rustls-tls")]
-    #[error("rustls error: {0}")]
-    Rustls(#[from] rustls::Error),
-    /// Webpki error.
-    #[cfg(feature = "__rustls-tls")]
-    #[error("webpki error: {0}")]
-    Webpki(#[from] webpki::Error),
-    /// DNS name resolution error.
-    #[cfg(feature = "__rustls-tls")]
-    #[error("Invalid DNS name")]
-    InvalidDnsName,
 }

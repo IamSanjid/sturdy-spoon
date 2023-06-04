@@ -1,5 +1,5 @@
 use self::rejection::*;
-use super::sturdy_tungstenite::Message;
+use super::sturdy_tungstenite::{error::Error as WsError, Message};
 use axum::async_trait;
 use axum::extract::FromRequestParts;
 use axum::{
@@ -7,7 +7,6 @@ use axum::{
     response::Response,
     Error,
 };
-use futures_util::lock::BiLock;
 use futures_util::{
     sink::{Sink, SinkExt},
     stream::{Stream, StreamExt},
@@ -19,15 +18,17 @@ use http::{
 };
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use sha1::{Digest, Sha1};
+use std::sync::Arc;
 use std::{
     borrow::Cow,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
+use tokio::sync::Mutex;
 
 use super::sturdy_tungstenite::protocol::{self, WebSocketConfig};
-use super::ws_stream::{self, SplitStream, WebSocketStream};
+use super::ws_stream::{self, SplitSink, SplitStream, WebSocketStream};
 
 /// Extractor for establishing WebSocket connections.
 ///
@@ -358,8 +359,8 @@ impl WebSocket {
         self.inner.send(msg).await.map_err(Error::new)
     }
 
-    pub fn send_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), Error> {
-        self.inner.write_raw(bytes).map_err(Error::new)
+    pub fn send_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError> {
+        self.inner.write_raw(bytes)
     }
 
     /// Gracefully close this WebSocket.
@@ -372,11 +373,17 @@ impl WebSocket {
         self.protocol.as_ref()
     }
 
-    pub fn split(self) -> (BiLock<WebSocket>, SplitStream<WebSocket>) {
-        let (a, b) = BiLock::new(self);
-        let read = SplitStream(a);
-        let write = b;
-        (write, read)
+    pub fn tri_split(
+        self,
+    ) -> (
+        Arc<Mutex<WebSocket>>,
+        SplitStream<WebSocket>,
+        SplitSink<WebSocket, Message>,
+    ) {
+        let a = Arc::new(Mutex::new(self));
+        let b = SplitStream(a.clone());
+        let c = SplitSink(a.clone());
+        (a, b, c)
     }
 }
 
