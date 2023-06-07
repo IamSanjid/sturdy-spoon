@@ -1,8 +1,13 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::common::utils::get_elapsed_milis;
 
 pub mod room_state;
 mod user_state;
 pub mod ws_state;
+
+use tokio::sync::RwLock;
+pub use user_state::validate_and_handle_client;
 
 pub(super) type WClientSender = tokio::sync::mpsc::UnboundedSender<(uuid::Uuid, SocketsData)>;
 pub(super) type WClientReciever = tokio::sync::mpsc::UnboundedReceiver<(uuid::Uuid, SocketsData)>;
@@ -14,9 +19,11 @@ pub const STATE_PAUSE: usize = 0;
 pub const STATE_PLAY: usize = 1;
 pub const STATE_MAX: usize = STATE_PLAY;
 
-pub const PERMISSION_RESTRICTED: usize = 0;
-pub const PERMISSION_CONTROLLABLE: usize = 1;
-pub const PERMISSION_ALL: usize = PERMISSION_RESTRICTED | PERMISSION_CONTROLLABLE;
+pub const PERMISSION_RESTRICTED: usize = 0b000;
+pub const PERMISSION_CONTROLLABLE: usize = 0b001;
+pub const PERMISSION_CHANGER: usize = 0b010;
+pub const PERMISSION_ALL: usize =
+    PERMISSION_RESTRICTED | PERMISSION_CONTROLLABLE | PERMISSION_CHANGER;
 
 pub const SYNC_TIMEOUT: u128 = 5 * 1000; // 5 seconds
 pub const MAX_VIDEO_LEN: usize = 4 * 3600 * 1000; // 4 hours
@@ -62,23 +69,79 @@ impl From<usize> for Permission {
     }
 }
 
+pub struct SyncTime {
+    data: RwLock<(u128, usize)>,
+    is_writing: AtomicBool,
+}
+
+impl SyncTime {
+    fn new(last_updated: u128, time: usize) -> Self {
+        Self {
+            data: RwLock::new((last_updated, time)),
+            is_writing: AtomicBool::new(false),
+        }
+    }
+
+    fn update_last_updated(&mut self) {
+        let data = self.data.get_mut();
+        data.0 = get_elapsed_milis();
+    }
+
+    fn set_time(&mut self, time: usize) {
+        self.is_writing.store(true, Ordering::Release);
+        let data = self.data.get_mut();
+        data.0 = get_elapsed_milis();
+        data.1 = time;
+        self.is_writing.store(false, Ordering::Release);
+    }
+
+    async fn should_update_time(&self, should: bool) {
+        if self.is_writing() {
+            return; // someone is already writing continue..
+        }
+        let mut data = self.data.write().await;
+        self.is_writing.store(true, Ordering::Release);
+        let current_time = get_elapsed_milis();
+        let diff = current_time - data.0;
+        data.0 = current_time;
+        if should {
+            data.1 += diff as usize;
+        }
+        self.is_writing.store(false, Ordering::Release);
+    }
+
+    pub fn is_writing(&self) -> bool {
+        self.is_writing.load(Ordering::Acquire)
+    }
+
+    pub async fn get(&self) -> usize {
+        let data = self.data.read().await;
+        self.is_writing.store(false, Ordering::Release);
+        let time = data.1;
+        return time;
+    }
+}
+
 pub struct VideoData {
     url: String,
-    time: usize,            // in Miliseconds
     state: usize,           // 0: Pause, 1: Play
     permission: Permission, // 0: Restricted, 1: Can control video
-    last_updated: u128,
+    sync_time: SyncTime,
 }
 
 impl VideoData {
     pub fn new(url: String) -> Self {
         Self {
             url,
-            time: 0,
             state: 0,
             permission: Permission::default(),
-            last_updated: get_elapsed_milis(),
+            sync_time: SyncTime::new(get_elapsed_milis(), 0),
         }
+    }
+
+    pub fn with_permission(mut self, permission: usize) -> Self {
+        self.permission = permission.into();
+        self
     }
 
     pub fn get_url(&self) -> String {
@@ -95,26 +158,21 @@ impl VideoData {
 
     pub fn set_state(&mut self, state: usize) {
         self.state = state;
-        self.update();
+        self.sync_time.update_last_updated();
     }
 
-    pub fn get_time(&self) -> usize {
-        self.time
+    pub fn get_sync_time(&self) -> &SyncTime {
+        &self.sync_time
     }
 
     pub fn set_time(&mut self, time: usize) {
-        self.last_updated = get_elapsed_milis();
-        self.time = time;
+        self.sync_time.set_time(time);
     }
 
-    pub fn update(&mut self) {
-        let current_time = get_elapsed_milis();
-        let diff = current_time - self.last_updated;
-        self.last_updated = current_time;
-        if self.state != STATE_PLAY {
-            return;
-        }
-        self.time += diff as usize;
+    pub async fn update_time_async(&self) {
+        self.sync_time
+            .should_update_time(self.state == STATE_PLAY)
+            .await
     }
 
     pub fn get_permission(&self) -> Permission {

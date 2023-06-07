@@ -48,8 +48,9 @@ impl WsState {
     pub async fn create_room(
         &'static self,
         data: VideoData,
+        name: String,
         max_users: usize,
-    ) -> Result<Uuid, WebSocketStateError> {
+    ) -> Result<(Uuid, String), WebSocketStateError> {
         if max_users > MAX_USERS {
             return Err(WebSocketStateError::MaxUserExceeded);
         }
@@ -60,6 +61,7 @@ impl WsState {
         let data = Arc::new(RwLock::new(data));
         let room = RoomState {
             id: room_id,
+            name,
             client_tx,
             broadcast_tx,
             exit_notify: exit_notify.clone(),
@@ -77,7 +79,7 @@ impl WsState {
             broadcast_rx,
         ));
 
-        Ok(room_id)
+        Ok((room_id, DEFAULT_WS.into()))
     }
 
     pub async fn verify_room(&self, room_id: Uuid) -> Result<(Uuid, String), WebSocketStateError> {
@@ -92,7 +94,7 @@ impl WsState {
     }
 
     pub async fn join_room(
-        &'static self,
+        &self,
         room_id: Uuid,
         name: String,
     ) -> Result<LocalUser, WebSocketStateError> {

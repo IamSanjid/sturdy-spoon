@@ -4,7 +4,7 @@ use crate::ws_handler::ws_state::WsState;
 
 #[derive(Clone, FromRef)]
 pub struct ServerState {
-    ws_state: &'static WsState,
+    pub ws_state: &'static WsState,
 }
 
 impl ServerState {

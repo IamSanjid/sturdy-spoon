@@ -13,15 +13,16 @@ use uuid::Uuid;
 use crate::sturdy_ws::CloseFrame;
 use crate::sturdy_ws::{Message, WebSocket};
 
-use crate::sturdy_ws::Frame;
-
 use super::ws_state::WsState;
 use super::VideoData;
 use super::{SocketsData, WClientReciever, WClientSender, WSMsgReciever, WSMsgSender};
+use crate::sturdy_ws::Frame;
 
+#[allow(unused)]
 #[derive(Clone)]
 pub struct RoomState {
     pub(super) id: Uuid,
+    pub(super) name: String,
     pub(super) client_tx: WClientSender,
     pub(super) broadcast_tx: WSMsgSender,
     pub(super) exit_notify: Arc<Notify>,
@@ -33,6 +34,8 @@ pub struct RoomState {
 impl RoomState {
     pub(super) fn increase_remaining_users(&self) -> bool {
         if self.remaining_users.fetch_add(1, Ordering::AcqRel) >= self.max_users {
+            self.remaining_users
+                .store(self.max_users, Ordering::Release);
             return false;
         }
         return true;
@@ -62,21 +65,30 @@ pub async fn room_handle(
     mut client_joined_rx: WClientReciever,
     mut broadcast_rx: WSMsgReciever,
 ) {
-    let mut local_sockets = HashMap::new();
+    let mut local_sockets = HashMap::with_capacity(10);
     let mut last_exit_msg = None;
     loop {
-        let Some(msg) = broadcast_rx.recv().await else {
-            last_exit_msg = None;
-            break;
-        };
+        tokio::select! {
+            msg = broadcast_rx.recv() => {
+                let Some(msg) = msg else {
+                    last_exit_msg = None;
+                    break;
+                };
 
-        while let Some((id, data)) = client_joined_rx.recv().await {
-            local_sockets.insert(id, data);
-        }
-
-        if let Some(exit_msg) = handle_broadcast_msg(msg, ws_state, &local_sockets).await {
-            last_exit_msg = Some(exit_msg);
-            break;
+                if let Some(exit_msg) = handle_broadcast_msg(msg, ws_state, &local_sockets).await {
+                    last_exit_msg = Some(exit_msg);
+                    break;
+                }
+            },
+            client_joined = client_joined_rx.recv() => {
+                let Some((id, data)) = client_joined else {
+                    break;
+                };
+                local_sockets.insert(id, data);
+                while let Ok((id, data)) = client_joined_rx.try_recv() {
+                    local_sockets.insert(id, data);
+                }
+            }
         }
     }
 
@@ -84,8 +96,8 @@ pub async fn room_handle(
         code: crate::sturdy_ws::CloseCode::Protocol,
         reason: std::borrow::Cow::Borrowed("Forced Close."),
     })));
-
     let cloned_msg = close_msg.clone();
+
     let frame: Frame = close_msg.into();
     let bytes: Vec<u8> = frame.into();
 
@@ -96,6 +108,7 @@ pub async fn room_handle(
             ws_state.users.remove_async(id).await;
         });
     }
+
     let _: Vec<_> = futures.collect().await;
     local_sockets.clear();
 
