@@ -33,7 +33,7 @@ pub struct RoomState {
 
 impl RoomState {
     pub(super) fn increase_remaining_users(&self) -> bool {
-        if self.remaining_users.fetch_add(1, Ordering::AcqRel) >= self.max_users {
+        if self.remaining_users.fetch_add(1, Ordering::AcqRel) >= self.max_users - 1 {
             self.remaining_users
                 .store(self.max_users, Ordering::Release);
             return false;
@@ -114,6 +114,7 @@ pub async fn room_handle(
 
     ws_state.rooms.remove_async(&room_id).await;
     exit_notify.notify_waiters();
+    println!("clearing room_id: {}", room_id);
 }
 
 #[inline(always)]

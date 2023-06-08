@@ -1,0 +1,25 @@
+<html>
+<body>
+    <div id="info-collect">
+        <p>Joining room <b><span id="room-name" style="color: darkorange;"></span></b></p>
+        <form id="room-join-form">
+            <label for="name">Name:</label>
+            <input type="text" id="name" name="name" required><br>
+            <input type="submit" name="Join Room">
+        </form>
+    </div>
+    <div id="main-view" style="display: none;">
+        <div id="player-div"></div>
+    </div>
+    <script src="../js/utils.js"></script>
+    <script>
+        let room_data = null;
+        if (room_data === null) {
+            window.location.assign(getPathUrl("room.html"));
+        }
+    </script>
+    <script src="../js/thirdparty/jwplayer.js"></script>
+    <script src="../js/str_packet.js"></script>
+    <script src="../js/room.js"></script>
+</body>
+</html>

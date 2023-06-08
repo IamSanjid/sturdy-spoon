@@ -82,15 +82,18 @@ impl WsState {
         Ok((room_id, DEFAULT_WS.into()))
     }
 
-    pub async fn verify_room(&self, room_id: Uuid) -> Result<(Uuid, String), WebSocketStateError> {
+    pub async fn verify_room(
+        &self,
+        room_id: Uuid,
+    ) -> Result<(Uuid, String, String), WebSocketStateError> {
         // TODO: Check DB and get the proper ID? also the WebSocket path can be different than usual due to load balancing?
-        let Some(is_full) = self.rooms.read(&room_id, |_, v| v.is_full()) else {
+        let Some((is_full, name)) = self.rooms.read(&room_id, |_, v| (v.is_full(), v.name.clone())) else {
             return Err(WebSocketStateError::NoRoom);
         };
         if is_full {
             return Err(WebSocketStateError::RoomFull);
         }
-        Ok((room_id, DEFAULT_WS.into()))
+        Ok((room_id, name, DEFAULT_WS.into()))
     }
 
     pub async fn join_room(
@@ -98,12 +101,12 @@ impl WsState {
         room_id: Uuid,
         name: String,
     ) -> Result<LocalUser, WebSocketStateError> {
-        let Some((is_owner, increased, data)) = self.rooms.read(&room_id, |_, v| {
-            (v.is_first_user(), v.increase_remaining_users(), v.data.clone())
+        let Some((is_owner, decreased, data)) = self.rooms.read(&room_id, |_, v| {
+            (v.is_first_user(), v.decrease_remaining_users(), v.data.clone())
         }) else {
             return Err(WebSocketStateError::NoRoom);
         };
-        if !increased {
+        if !decreased {
             return Err(WebSocketStateError::RoomFull);
         }
         let data = data.read().await;

@@ -99,8 +99,8 @@ impl SyncTime {
         if self.is_writing() {
             return; // someone is already writing continue..
         }
-        let mut data = self.data.write().await;
         self.is_writing.store(true, Ordering::Release);
+        let mut data = self.data.write().await;
         let current_time = get_elapsed_milis();
         let diff = current_time - data.0;
         data.0 = current_time;

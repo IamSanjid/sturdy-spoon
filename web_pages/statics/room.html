@@ -1,0 +1,20 @@
+<html>
+<body>
+    <div id="info-collect">
+        <form id="room-join-form">
+            <label for="name">Room Id:</label>
+            <input type="text" id="room_id" name="room_id" required><br><br>
+            <input type="submit" name="Join Room">
+        </form>
+    </div>
+    <script src="js/utils.js"></script>
+    <script>
+        const formJoinRoom = document.getElementById("room-join-form");
+        const roomId = document.getElementById("room_id");
+        formJoinRoom.onsubmit = (e) => {
+            e.preventDefault();
+            window.location.assign(getPathUrl("room/" + roomId.value));
+        };
+    </script>
+</body>
+</html>

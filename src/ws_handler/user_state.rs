@@ -15,7 +15,7 @@ use tokio::sync::{
 use uuid::Uuid;
 
 use super::{
-    ws_state::WsState, Permission, VideoData, MAX_VIDEO_LEN, PERMISSION_CONTROLLABLE, STATE_MAX,
+    ws_state::WsState, Permission, VideoData, MAX_VIDEO_LEN, PERMISSION_CONTROLLABLE, STATE_MAX, WSMsgSender,
 };
 use crate::{
     sturdy_ws::{CloseFrame, Message, WebSocket},
@@ -125,6 +125,7 @@ async fn verify_join_msg(
 
                     let Ok(room_id) = Uuid::from_str(room_id) else { return None; };
 
+                    println!("Trying to join room: {}", room_id);
                     return ws_state.join_room(room_id, name.to_owned()).await.ok();
                 }
                 _ => return None,
@@ -135,25 +136,36 @@ async fn verify_join_msg(
 }
 
 async fn user_handle(
-    socket: WebSocket,
-    #[allow(unused)] who: SocketAddr,
+    mut socket: WebSocket,
+    who: SocketAddr,
     mut local_data: LocalUser,
     ws_state: &'static WsState,
 ) {
     let (dm_tx, mut dm_rx) = mpsc::unbounded_channel();
     let id = local_data.id;
-    let user = UserState { id, tx: dm_tx };
-    let (socket, mut receiver, mut sender) = socket.tri_split();
+    let name = local_data.name.clone();
+    let user = UserState { id, tx: dm_tx.clone() };
     let _ = ws_state.users.insert_async(id, user).await;
 
     let current_room_id = local_data.room_id;
-    let Some((exit_noti, data)) = ws_state.rooms
-        .read(&current_room_id, |_, v| (v.exit_notify.clone(), v.data.clone())) else {
+    let Some((exit_noti, data, broadcast_tx)) = ws_state.rooms
+        .read(&current_room_id, |_, v| {
+            let _ = v.broadcast_tx
+                    .send(Message::Text(StringPacket::new("joined").arg(name.clone()).arg(id.to_string()).into()));
+            (v.exit_notify.clone(), v.data.clone(), v.broadcast_tx.clone())
+        }) else {
             return;
         };
+
+    let r_data = data.read().await;
+    let data_str = StringPacket::new("video_data")
+        .arg(video_data_json(r_data.deref(), local_data.permission.into()).await);
+    let _ = socket.send(Message::Text(data_str.into())).await;
+    drop(r_data);
     // get the notified future before starting the tasks..
     let exit_noti = exit_noti.notified();
 
+    let (socket, mut receiver, mut sender) = socket.tri_split();
     let mut send_task = tokio::spawn(async move {
         loop {
             let Some(msg) = dm_rx.recv().await else {
@@ -178,13 +190,15 @@ async fn user_handle(
                 _ = tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT)) => None
             };
             if let Some(msg) = msg {
-                let ControlFlow::Continue(processed) = process_message(msg, &ws_state, &data, &mut local_data).await else {
+                let ControlFlow::Continue(processed) = process_message(msg, (&broadcast_tx, &dm_tx), &data, &mut local_data).await else {
                     break;
                 };
                 if processed {
                     missed_pings = 0;
                 }
+                continue;
             }
+            missed_pings += 1;
             if missed_pings >= MAX_MISSED_PING {
                 break;
             }
@@ -212,19 +226,30 @@ async fn user_handle(
         }
     }
 
-    let Some(users_remained) = ws_state.rooms.read(&current_room_id, |_, v| v.decrease_remaining_users()) else {
+    let Some(users_remained) = ws_state.rooms.read(&current_room_id, |_, v| v.increase_remaining_users()) else {
         return;
     };
 
     if !users_remained {
         // This should also trigger the cleanup...
         ws_state.rooms.remove_async(&current_room_id).await;
+    } else {
+        ws_state.rooms.read(&current_room_id, |_, v| {
+            v.broadcast_tx.send(Message::Text(
+                StringPacket::new("left")
+                    .arg(name)
+                    .arg(id.to_string())
+                    .into(),
+            ))
+        });
     }
+
+    println!("{} - {} left!", who, id);
 }
 
 #[inline(always)]
 async fn check_permission_or_send_current(
-    ws_state: &'static WsState,
+    dm_tx: &WSMsgSender,
     user: &LocalUser,
     state_data: &RwLock<VideoData>,
 ) -> ControlFlow<Option<String>, bool> {
@@ -234,11 +259,8 @@ async fn check_permission_or_send_current(
     let data = state_data.read().await;
     let data_str = StringPacket::new("video_data")
         .arg(video_data_json(data.deref(), user.permission.into()).await);
-    if let None = ws_state
-        .users
-        .read(&user.id, |_, v| v.tx.send(data_str.into()))
-    {
-        return ControlFlow::Break(Some("Failed to send video data".into()));
+    if let Err(err) = dm_tx.send(data_str.into()) {
+        return ControlFlow::Break(Some(err.to_string()));
     };
     return ControlFlow::Continue(false);
 }
@@ -274,7 +296,7 @@ async fn parse_state(data: &mut impl Iterator<Item = &str>) -> ControlFlow<bool,
 
 async fn process_message(
     msg: Message,
-    ws_state: &'static WsState,
+    (broadcast_tx, dm_tx): (&WSMsgSender, &WSMsgSender),
     state_data: &RwLock<VideoData>,
     local_data: &mut LocalUser,
 ) -> ControlFlow<Option<String>, bool> {
@@ -316,17 +338,14 @@ async fn process_message(
                         let data_str = StringPacket::new("state")
                             .arg(state_time.to_string())
                             .arg(read_state_data.get_state().to_string());
-                        if let None = ws_state
-                            .users
-                            .read(&local_data.id, |_, v| v.tx.send(data_str.into()))
-                        {
-                            return ControlFlow::Break(Some("Failed to send status data".into()));
-                        };
+                        if let Err(err) = dm_tx.send(data_str.into()) {
+                            return ControlFlow::Break(Some(err.to_string()));
+                        }
                     }
                     return ControlFlow::Continue(true);
                 }
                 "seek" => {
-                    if !check_permission_or_send_current(ws_state, &local_data, state_data).await? {
+                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
                         return ControlFlow::Continue(true);
                     }
 
@@ -341,15 +360,12 @@ async fn process_message(
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
                     let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let None = ws_state
-                        .rooms
-                        .read(&local_data.room_id, |_, v| v.broadcast_tx.send(msg.into()))
-                    {
-                        return ControlFlow::Break(Some("Failed to send broadcast msg".into()));
-                    };
+                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                        return ControlFlow::Break(Some(err.to_string()));
+                    }
                 }
                 "play" => {
-                    if !check_permission_or_send_current(ws_state, &local_data, state_data).await? {
+                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
                         return ControlFlow::Continue(true);
                     }
 
@@ -365,15 +381,12 @@ async fn process_message(
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
                     let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let None = ws_state
-                        .rooms
-                        .read(&local_data.room_id, |_, v| v.broadcast_tx.send(msg.into()))
-                    {
-                        return ControlFlow::Break(Some("Failed to send broadcast msg".into()));
-                    };
+                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                        return ControlFlow::Break(Some(err.to_string()));
+                    }
                 }
                 "pause" => {
-                    if !check_permission_or_send_current(ws_state, &local_data, state_data).await? {
+                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
                         return ControlFlow::Continue(true);
                     }
 
@@ -389,12 +402,9 @@ async fn process_message(
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
                     let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let None = ws_state
-                        .rooms
-                        .read(&local_data.room_id, |_, v| v.broadcast_tx.send(msg.into()))
-                    {
-                        return ControlFlow::Break(Some("Failed to send broadcast msg".into()));
-                    };
+                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                        return ControlFlow::Break(Some(err.to_string()));
+                    }
                 }
                 _ => {}
             }

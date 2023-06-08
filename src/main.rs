@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{net::SocketAddr, str::FromStr};
 
 use axum::extract::State;
 use axum::{
@@ -27,10 +27,11 @@ async fn main() {
 }
 
 async fn run_server(state: ServerState) {
-    let statics_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("statics");
-
     let app = Router::new()
-        .fallback_service(ServeDir::new(statics_dir).append_index_html_on_directories(true))
+        .fallback_service(
+            ServeDir::new(state.get_static_dir()).append_index_html_on_directories(true),
+        )
+        .nest_service("/js", ServeDir::new(state.get_js_dir()))
         .route("/ws", get(ws_handler))
         .with_state(state.clone())
         .merge(web::routes(state));
