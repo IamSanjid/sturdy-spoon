@@ -6,19 +6,17 @@ use std::{
     str::FromStr,
 };
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde_json::json;
-use tokio::sync::{
-    mpsc::{self, UnboundedSender},
-    RwLock,
-};
+use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
 use super::{
-    ws_state::WsState, Permission, VideoData, MAX_VIDEO_LEN, PERMISSION_CONTROLLABLE, STATE_MAX, WSMsgSender,
+    ws_state::WsState, BMsgSender, Permission, VideoData, WSMsgSender, MAX_VIDEO_LEN,
+    PERMISSION_CONTROLLABLE, STATE_MAX,
 };
 use crate::{
-    sturdy_ws::{CloseFrame, Message, WebSocket},
+    sturdy_ws::{ArcRawBytes, CloseFrame, Frame, Message, WebSocket},
     ws_handler::{STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT},
 };
 
@@ -26,10 +24,10 @@ const TIMEOUT: u64 = 60 * 2 * 1000; // 2 Minutes
 const MAX_MISSED_PING: usize = 2;
 
 #[derive(Clone)]
+#[allow(unused)]
 pub(super) struct UserState {
-    #[allow(unused)]
     pub id: Uuid,
-    pub tx: UnboundedSender<Message>,
+    pub tx: WSMsgSender,
 }
 
 pub struct LocalUser {
@@ -141,38 +139,71 @@ async fn user_handle(
     mut local_data: LocalUser,
     ws_state: &'static WsState,
 ) {
-    let (dm_tx, mut dm_rx) = mpsc::unbounded_channel();
     let id = local_data.id;
-    let name = local_data.name.clone();
-    let user = UserState { id, tx: dm_tx.clone() };
+
+    let (dm_tx, mut dm_rx) = mpsc::unbounded_channel();
+    let user = UserState {
+        id,
+        tx: dm_tx.clone(),
+    };
     let _ = ws_state.users.insert_async(id, user).await;
 
+    let name = local_data.name.clone();
     let current_room_id = local_data.room_id;
     let Some((exit_noti, data, broadcast_tx)) = ws_state.rooms
         .read(&current_room_id, |_, v| {
-            let _ = v.broadcast_tx
-                    .send(Message::Text(StringPacket::new("joined").arg(name.clone()).arg(id.to_string()).into()));
             (v.exit_notify.clone(), v.data.clone(), v.broadcast_tx.clone())
         }) else {
             return;
         };
+
+    let _ = broadcast_tx.send(
+        Message::Text(
+            StringPacket::new("joined")
+                .arg(name.clone())
+                .arg(id.to_string())
+                .into(),
+        )
+        .into_raw_bytes(),
+    );
 
     let r_data = data.read().await;
     let data_str = StringPacket::new("video_data")
         .arg(video_data_json(r_data.deref(), local_data.permission.into()).await);
     let _ = socket.send(Message::Text(data_str.into())).await;
     drop(r_data);
-    // get the notified future before starting the tasks..
-    let exit_noti = exit_noti.notified();
 
-    let (socket, mut receiver, mut sender) = socket.tri_split();
+    // get the notified future before starting the tasks..
+    let exit_notif = exit_noti.notified();
+    let mut broadcast_rx = broadcast_tx.subscribe();
+
+    let (socket, mut receiver) = socket.sock_split();
     let mut send_task = tokio::spawn(async move {
         loop {
-            let Some(msg) = dm_rx.recv().await else {
-                break;
-            };
-            if let Err(_) = sender.send(msg).await {
-                break;
+            tokio::select! {
+                msg = dm_rx.recv() => {
+                    let Some(msg) = msg else {
+                        break;
+                    };
+                    if let Err(_) = socket.lock().await.send(msg).await {
+                        break;
+                    }
+                },
+                msg = broadcast_rx.recv() => {
+                    let Ok(msg) = msg else {
+                        break;
+                    };
+                    let mut socket = socket.lock().await;
+                    if let Err(err) = socket.send_raw(msg.as_ref()) {
+                        match err {
+                            crate::sturdy_ws::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                let frame: Frame = msg.as_ref().clone().into();
+                                let _ = socket.send(Message::Frame(frame)).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
     });
@@ -205,22 +236,10 @@ async fn user_handle(
         }
     });
 
-    match ws_state
-        .rooms
-        .read(&current_room_id, |_, v| v.client_tx.send((id, socket)))
-    {
-        Some(Ok(())) => {}
-        _ => {
-            send_task.abort();
-            recv_task.abort();
-            return;
-        }
-    }
-
     tokio::select! {
         _ = (&mut recv_task) => send_task.abort(),
         _ = (&mut send_task) => recv_task.abort(),
-        _ = exit_noti => {
+        _ = exit_notif => {
             send_task.abort();
             recv_task.abort();
         }
@@ -231,16 +250,18 @@ async fn user_handle(
     };
 
     if !users_remained {
-        // This should also trigger the cleanup...
-        ws_state.rooms.remove_async(&current_room_id).await;
+        let _ = ws_state.close_room(current_room_id).await;
     } else {
         ws_state.rooms.read(&current_room_id, |_, v| {
-            v.broadcast_tx.send(Message::Text(
-                StringPacket::new("left")
-                    .arg(name)
-                    .arg(id.to_string())
-                    .into(),
-            ))
+            v.broadcast_tx.send(
+                Message::Text(
+                    StringPacket::new("left")
+                        .arg(name)
+                        .arg(id.to_string())
+                        .into(),
+                )
+                .into_raw_bytes(),
+            )
         });
     }
 
@@ -296,7 +317,7 @@ async fn parse_state(data: &mut impl Iterator<Item = &str>) -> ControlFlow<bool,
 
 async fn process_message(
     msg: Message,
-    (broadcast_tx, dm_tx): (&WSMsgSender, &WSMsgSender),
+    (broadcast_tx, dm_tx): (&BMsgSender, &WSMsgSender),
     state_data: &RwLock<VideoData>,
     local_data: &mut LocalUser,
 ) -> ControlFlow<Option<String>, bool> {
@@ -359,8 +380,8 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }
@@ -380,8 +401,8 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }
@@ -401,8 +422,8 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg = StringPacket::new(data_type).arg(time.to_string());
-                    if let Err(err) = broadcast_tx.send(msg.into()) {
+                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }

@@ -9,11 +9,8 @@ pub mod ws_state;
 use tokio::sync::RwLock;
 pub use user_state::validate_and_handle_client;
 
-pub(super) type WClientSender = tokio::sync::mpsc::UnboundedSender<(uuid::Uuid, SocketsData)>;
-pub(super) type WClientReciever = tokio::sync::mpsc::UnboundedReceiver<(uuid::Uuid, SocketsData)>;
 pub(super) type WSMsgSender = tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::Message>;
-pub(super) type WSMsgReciever = tokio::sync::mpsc::UnboundedReceiver<crate::sturdy_ws::Message>;
-pub(super) type SocketsData = std::sync::Arc<tokio::sync::Mutex<crate::sturdy_ws::WebSocket>>;
+pub(super) type BMsgSender = tokio::sync::broadcast::Sender<std::sync::Arc<Vec<u8>>>;
 
 pub const STATE_PAUSE: usize = 0;
 pub const STATE_PLAY: usize = 1;

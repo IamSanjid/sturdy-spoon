@@ -1,13 +1,14 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use super::room_state::room_handle;
+use crate::sturdy_ws::{CloseCode, CloseFrame, Message};
+
 use super::user_state::{LocalUser, UserState};
 use super::PERMISSION_ALL;
 use super::{room_state::RoomState, VideoData};
 use http::StatusCode;
 use scc::HashIndex;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 
@@ -28,6 +29,9 @@ pub enum WebSocketStateError {
     #[error("The spcified room is full.")]
     #[code(StatusCode::BAD_REQUEST)]
     RoomFull,
+    #[error("The spcified user doesn't exist.")]
+    #[code(StatusCode::BAD_REQUEST)]
+    NoUser,
 }
 
 pub struct WsState {
@@ -55,29 +59,20 @@ impl WsState {
             return Err(WebSocketStateError::MaxUserExceeded);
         }
         let room_id = Uuid::new_v4();
-        let (client_tx, client_rx) = mpsc::unbounded_channel();
-        let (broadcast_tx, broadcast_rx) = mpsc::unbounded_channel();
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel(MAX_USERS);
         let exit_notify = Arc::new(Notify::new());
         let data = Arc::new(RwLock::new(data));
         let room = RoomState {
             id: room_id,
             name,
-            client_tx,
             broadcast_tx,
-            exit_notify: exit_notify.clone(),
+            exit_notify,
             data: data.clone(),
             remaining_users: Arc::new(AtomicUsize::new(max_users)),
             max_users,
         };
 
         let _ = self.rooms.insert_async(room_id, room).await;
-        tokio::spawn(room_handle(
-            room_id,
-            exit_notify,
-            self,
-            client_rx,
-            broadcast_rx,
-        ));
 
         Ok((room_id, DEFAULT_WS.into()))
     }
@@ -124,5 +119,26 @@ impl WsState {
         };
 
         return Ok(local_user);
+    }
+
+    pub fn kick_user(&self, id: Uuid) -> Result<(), WebSocketStateError> {
+        if let None = self.users.read(&id, |_, v| {
+            v.tx.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Protocol,
+                reason: std::borrow::Cow::Borrowed("Test"),
+            })))
+        }) {
+            return Err(WebSocketStateError::NoUser);
+        };
+
+        Ok(())
+    }
+
+    pub async fn close_room(&self, room_id: Uuid) -> Result<(), WebSocketStateError> {
+        if let None = self.rooms.read(&room_id, |_, v| v.close()) {
+            return Err(WebSocketStateError::NoRoom);
+        }
+        self.rooms.remove_async(&room_id).await;
+        Ok(())
     }
 }

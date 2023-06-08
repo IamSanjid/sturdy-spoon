@@ -7,6 +7,7 @@ use axum::{
     response::Response,
     Error,
 };
+use futures_util::lock::BiLock;
 use futures_util::{
     sink::{Sink, SinkExt},
     stream::{Stream, StreamExt},
@@ -18,17 +19,15 @@ use http::{
 };
 use hyper::upgrade::{OnUpgrade, Upgraded};
 use sha1::{Digest, Sha1};
-use std::sync::Arc;
 use std::{
     borrow::Cow,
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::sync::Mutex;
 
 use super::sturdy_tungstenite::protocol::{self, WebSocketConfig};
-use super::ws_stream::{self, SplitSink, SplitStream, WebSocketStream};
+use super::ws_stream::{self, SplitStream, WebSocketStream};
 
 /// Extractor for establishing WebSocket connections.
 ///
@@ -373,17 +372,10 @@ impl WebSocket {
         self.protocol.as_ref()
     }
 
-    pub fn tri_split(
-        self,
-    ) -> (
-        Arc<Mutex<WebSocket>>,
-        SplitStream<WebSocket>,
-        SplitSink<WebSocket, Message>,
-    ) {
-        let a = Arc::new(Mutex::new(self));
-        let b = SplitStream(a.clone());
-        let c = SplitSink(a.clone());
-        (a, b, c)
+    pub fn sock_split(self) -> (BiLock<WebSocket>, SplitStream<WebSocket>) {
+        let (a, b) = BiLock::new(self);
+        let reader = SplitStream(b);
+        (a, reader)
     }
 }
 
