@@ -87,10 +87,10 @@ impl Into<Message> for StringPacket {
     }
 }
 
-async fn video_data_json(data: &VideoData, permission: usize) -> String {
+fn video_data_json(data: &VideoData, permission: usize) -> String {
     json!({
         "url": data.get_url(),
-        "time": data.get_sync_time().get().await,
+        "time": data.get_time(),
         "state": data.get_state(),
         "permission": permission
     })
@@ -169,7 +169,7 @@ async fn user_handle(
 
     let r_data = data.read().await;
     let data_str = StringPacket::new("video_data")
-        .arg(video_data_json(r_data.deref(), local_data.permission.into()).await);
+        .arg(video_data_json(r_data.deref(), local_data.permission.into()));
     let _ = socket.send(Message::Text(data_str.into())).await;
     drop(r_data);
 
@@ -220,6 +220,10 @@ async fn user_handle(
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT)) => None
             };
+            if let Ok(read_data) = data.try_read() {
+                drop(read_data); // Must drop it otherwise dead lock...
+                data.write().await.update_time();
+            }
             if let Some(msg) = msg {
                 let ControlFlow::Continue(processed) = process_message(msg, (&broadcast_tx, &dm_tx), &data, &mut local_data).await else {
                     break;
@@ -279,7 +283,7 @@ async fn check_permission_or_send_current(
     }
     let data = state_data.read().await;
     let data_str = StringPacket::new("video_data")
-        .arg(video_data_json(data.deref(), user.permission.into()).await);
+        .arg(video_data_json(data.deref(), user.permission.into()));
     if let Err(err) = dm_tx.send(data_str.into()) {
         return ControlFlow::Break(Some(err.to_string()));
     };
@@ -322,7 +326,6 @@ async fn process_message(
     local_data: &mut LocalUser,
 ) -> ControlFlow<Option<String>, bool> {
     // TODO: make permission `settable` for every user individually...
-    state_data.read().await.update_time_async().await;
     match msg {
         Message::Text(input_str) => {
             println!(">>> {} sent str: {:?}", local_data.name, input_str);
@@ -342,9 +345,8 @@ async fn process_message(
                     };
 
                     let read_state_data = state_data.read().await;
-                    let state_time = read_state_data.get_sync_time().get().await;
                     let needs_update = video_state != read_state_data.get_state()
-                        || ((time as isize).abs_diff(state_time as isize) as u128) > SYNC_TIMEOUT;
+                        || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128) > SYNC_TIMEOUT;
                     if needs_update {
                         if local_data
                             .permission
@@ -357,7 +359,7 @@ async fn process_message(
                             return ControlFlow::Continue(true);
                         }
                         let data_str = StringPacket::new("state")
-                            .arg(state_time.to_string())
+                            .arg(read_state_data.get_time().to_string())
                             .arg(read_state_data.get_state().to_string());
                         if let Err(err) = dm_tx.send(data_str.into()) {
                             return ControlFlow::Break(Some(err.to_string()));

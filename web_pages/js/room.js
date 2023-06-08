@@ -304,13 +304,11 @@ const setupVideoPlayer = function (url, autostart = false) {
         clearInterval(waitingForUser["updateId"]);
     }
 
-    setTimeout(() => {
-        waitingForUser["updateId"] = setInterval(function () {
-            if (typeof globalThis.player === "undefined" || typeof globalThis.ws_client === "undefined") {
-                return;
-            }
-            globalThis.ws_client.sendText("state", globalThis.player.getCurrentTime(), getPlayerState());
-        }, 30 * 1000);
+    waitingForUser["updateId"] = setInterval(function () {
+        if (typeof globalThis.player === "undefined" || typeof globalThis.ws_client === "undefined") {
+            return;
+        }
+        globalThis.ws_client.sendText("state", globalThis.player.getCurrentTime(), getPlayerState());
     }, 30 * 1000);
 
     return player;

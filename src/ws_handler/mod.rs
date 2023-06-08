@@ -1,12 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crate::common::utils::get_elapsed_milis;
 
 pub mod room_state;
 mod user_state;
 pub mod ws_state;
 
-use tokio::sync::RwLock;
 pub use user_state::validate_and_handle_client;
 
 pub(super) type WSMsgSender = tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::Message>;
@@ -66,73 +63,22 @@ impl From<usize> for Permission {
     }
 }
 
-pub struct SyncTime {
-    data: RwLock<(u128, usize)>,
-    is_writing: AtomicBool,
-}
-
-impl SyncTime {
-    fn new(last_updated: u128, time: usize) -> Self {
-        Self {
-            data: RwLock::new((last_updated, time)),
-            is_writing: AtomicBool::new(false),
-        }
-    }
-
-    fn update_last_updated(&mut self) {
-        let data = self.data.get_mut();
-        data.0 = get_elapsed_milis();
-    }
-
-    fn set_time(&mut self, time: usize) {
-        self.is_writing.store(true, Ordering::Release);
-        let data = self.data.get_mut();
-        data.0 = get_elapsed_milis();
-        data.1 = time;
-        self.is_writing.store(false, Ordering::Release);
-    }
-
-    async fn should_update_time(&self, should: bool) {
-        if self.is_writing() {
-            return; // someone is already writing continue..
-        }
-        self.is_writing.store(true, Ordering::Release);
-        let mut data = self.data.write().await;
-        let current_time = get_elapsed_milis();
-        let diff = current_time - data.0;
-        data.0 = current_time;
-        if should {
-            data.1 += diff as usize;
-        }
-        self.is_writing.store(false, Ordering::Release);
-    }
-
-    pub fn is_writing(&self) -> bool {
-        self.is_writing.load(Ordering::Acquire)
-    }
-
-    pub async fn get(&self) -> usize {
-        let data = self.data.read().await;
-        self.is_writing.store(false, Ordering::Release);
-        let time = data.1;
-        return time;
-    }
-}
-
 pub struct VideoData {
     url: String,
+    time: usize,            // in Miliseconds
     state: usize,           // 0: Pause, 1: Play
     permission: Permission, // 0: Restricted, 1: Can control video
-    sync_time: SyncTime,
+    last_time_updated: u128,
 }
 
 impl VideoData {
     pub fn new(url: String) -> Self {
         Self {
             url,
+            time: 0,
             state: 0,
             permission: Permission::default(),
-            sync_time: SyncTime::new(get_elapsed_milis(), 0),
+            last_time_updated: get_elapsed_milis(),
         }
     }
 
@@ -155,21 +101,25 @@ impl VideoData {
 
     pub fn set_state(&mut self, state: usize) {
         self.state = state;
-        self.sync_time.update_last_updated();
+        self.last_time_updated = get_elapsed_milis();
     }
 
-    pub fn get_sync_time(&self) -> &SyncTime {
-        &self.sync_time
+    pub fn get_time(&self) -> usize {
+        self.time
     }
 
     pub fn set_time(&mut self, time: usize) {
-        self.sync_time.set_time(time);
+        self.time = time;
+        self.last_time_updated = get_elapsed_milis();
     }
 
-    pub async fn update_time_async(&self) {
-        self.sync_time
-            .should_update_time(self.state == STATE_PLAY)
-            .await
+    pub fn update_time(&mut self) {
+        let current_time = get_elapsed_milis();
+        let diff = current_time - self.last_time_updated;
+        self.last_time_updated = current_time;
+        if self.state == STATE_PLAY {
+            self.time += diff as usize;
+        }
     }
 
     pub fn get_permission(&self) -> Permission {
