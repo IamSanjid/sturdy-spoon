@@ -1,2 +1,2 @@
 # Sturdy Spoon
-A simple video sync web server, inspired by https://syncplay.pl/. It allows multiple users to sync and watch the same online video simultaneously. In simpler terms, it's a web server that lets you watch a video together with others and if the video is stored in the cloud.
+This project is a lightweight web server that enables synchronized video watching. Inspired by https://syncplay.pl/, it allows multiple users to watch the same online video together in real-time. The desired video has to be stored on the cloud and other people should be able to access that video without any extra steps. Simple `play`, `pause` and `seek` events are only syncronized, the time synchronization is implemented in a basic manner, so some inaccuracies may occur.
