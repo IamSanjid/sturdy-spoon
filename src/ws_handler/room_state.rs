@@ -15,7 +15,7 @@ pub struct RoomState {
     #[allow(unused)]
     pub(super) id: Uuid,
     pub(super) name: String,
-    pub(super) owner_id: Option<Uuid>,
+    pub(super) owner_id: Arc<RwLock<Option<Uuid>>>,
     pub(super) broadcast_tx: BMsgSender,
     pub(super) exit_notify: Arc<Notify>,
     pub(super) data: Arc<RwLock<VideoData>>,

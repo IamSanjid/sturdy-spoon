@@ -88,7 +88,7 @@ impl WsState {
         let room = RoomState {
             id: room_id,
             name,
-            owner_id: None,
+            owner_id: Arc::new(RwLock::new(None)),
             broadcast_tx,
             exit_notify: exit_notify.clone(),
             data: data.clone(),
@@ -126,25 +126,24 @@ impl WsState {
         let id = Uuid::new_v4();
         let mut is_new_owner = false;
         // TODO: Seperate socket identifier Id(s) from the actual user Id probably if we ever imlement DB.
-        // Safety: We're reading/modifying `room_state.owner_id` only here.
-        let Some((is_owner, decreased, data)) = (unsafe {
-            self.rooms.update(&room_id, |_, v| {
-                let is_owner = if v.is_empty() && v.owner_id.is_none() {
-                    v.owner_id = Some(id);
-                    is_new_owner = true;
-                    true
-                } else {
-                    v.owner_id.is_some_and(|oid| Some(oid) == pref_id)
-                };
-
-                (is_owner, v.decrease_remaining_users(), v.data.clone())
-            })
+        let Some((is_empty, decreased, data, owner_id)) = self.rooms.read(&room_id, |_, v| {
+            (v.is_empty(), v.decrease_remaining_users(), v.data.clone(), v.owner_id.clone())
         }) else {
             return Err(WebSocketStateError::NoRoom);
         };
         if !decreased {
             return Err(WebSocketStateError::RoomFull);
         }
+
+        let owner_id_read = owner_id.read().await;
+        let is_owner = if is_empty && owner_id_read.is_none() {
+            drop(owner_id_read);
+            *owner_id.write_owned().await = Some(id);
+            is_new_owner = true;
+            true
+        } else {
+            owner_id_read.is_some_and(|oid| Some(oid) == pref_id)
+        };
 
         let data = data.read().await;
         let permission = if is_owner {

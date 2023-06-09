@@ -24,7 +24,7 @@
             if (typeof respData.id === "undefined" || typeof respData.ws_path === "undefined") {
                 return;
             }
-            localStorage.removeItem("jwplayer.mute");
+            localStorage.clear(); // new room new world!
             const encodedRoomId = base64Encode(respData.id);
             console.log(encodedRoomId);
             window.location.assign(getPathUrl("room/" + encodedRoomId));
