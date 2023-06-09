@@ -7,7 +7,10 @@ use std::{
 };
 
 use futures_util::StreamExt;
+use jsonwebtoken::{self, decode, encode, Header, Validation};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
@@ -16,12 +19,55 @@ use super::{
     PERMISSION_CONTROLLABLE, STATE_MAX,
 };
 use crate::{
+    common::utils::get_elapsed_milis,
     sturdy_ws::{ArcRawBytes, CloseFrame, Frame, Message, WebSocket},
-    ws_handler::{STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT},
+    ws_handler::{
+        ws_state::WebSocketStateError, CLIENT_TIMEOUT, STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT,
+    },
 };
 
-const TIMEOUT: u64 = 60 * 2 * 1000; // 2 Minutes
+const EXPIRATION: u128 = 2 * 3600 * 1000; // 2 hours
 const MAX_MISSED_PING: usize = 2;
+
+const SUB: &str = "sturdy@spoon.com";
+const COMPANY: &str = "STURDY_SPOON";
+
+#[derive(Serialize, Deserialize)]
+struct Auth {
+    id: Uuid,
+    name: String,
+    room_id: Uuid,
+    sub: String,
+    company: String,
+    exp: u128,
+}
+
+impl Auth {
+    fn new(id: Uuid, name: String, room_id: Uuid, exp: u128) -> Self {
+        Self {
+            id,
+            name,
+            room_id,
+            sub: SUB.into(),
+            company: COMPANY.into(),
+            exp,
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+enum ValidationError {
+    #[error("The provided auth token was invalid.")]
+    AuthTokenInvalid,
+    #[error("The provided auth token is expired.")]
+    AuthTokenExpired,
+    #[error("The specified room doesn't exist.")]
+    NoRoom,
+    #[error("The specified room is full.")]
+    RoomFull,
+    #[error("Invalid packet structure.")]
+    InvalidPacket,
+}
 
 #[derive(Clone)]
 #[allow(unused)]
@@ -35,6 +81,7 @@ pub struct LocalUser {
     pub id: Uuid,
     pub room_id: Uuid,
     pub permission: Permission,
+    pub is_new_owner: bool,
 }
 
 pub struct StringPacket {
@@ -109,32 +156,68 @@ async fn verify_join_msg(
     msg: Message,
     ws_state: &'static WsState,
     who: &SocketAddr,
-) -> Option<LocalUser> {
+) -> Result<LocalUser, ValidationError> {
     match msg {
         Message::Text(t) => {
             println!(">>> {}: {}", who, &t);
             // TODO: Make the packet data splitter more generic way.
-            let Some((data_type, data)) = check_str_packet(&t) else { return None; };
+            let Some((data_type, data)) = check_str_packet(&t) else { return Err(ValidationError::InvalidPacket); };
             match data_type {
                 "join_room" => {
                     let mut data = data.split("|.|");
-                    let Some(room_id) = data.next() else { return None; };
-                    let Some(name) = data.next() else { return None; };
+                    let Some(room_id) = data.next() else { return Err(ValidationError::InvalidPacket); };
+                    let Some(name) = data.next() else { return Err(ValidationError::InvalidPacket); };
 
-                    let Ok(room_id) = Uuid::from_str(room_id) else { return None; };
+                    let Ok(room_id) = Uuid::from_str(room_id) else { return Err(ValidationError::InvalidPacket); };
 
                     println!("Trying to join room: {}", room_id);
-                    return ws_state.join_room(room_id, name.to_owned()).await.ok();
+                    return ws_state
+                        .join_room(room_id, name.to_owned(), None)
+                        .await
+                        .map_err(|err| match err {
+                            WebSocketStateError::NoRoom => ValidationError::NoRoom,
+                            WebSocketStateError::RoomFull => ValidationError::RoomFull,
+                            _ => ValidationError::InvalidPacket,
+                        });
                 }
-                _ => return None,
+                "auth_join" => {
+                    let mut data = data.split("|.|");
+                    let Some(auth_str) = data.next() else {
+                        return Err(ValidationError::AuthTokenInvalid);
+                    };
+                    let auth = match decode::<Auth>(
+                        auth_str,
+                        &ws_state.keys.decoding,
+                        &Validation::default(),
+                    ) {
+                        Ok(auth) => auth,
+                        Err(err) => {
+                            println!("[---] Auth decoding failed: {}", err);
+                            return Err(ValidationError::InvalidPacket);
+                        }
+                    };
+                    if get_elapsed_milis() > auth.claims.exp {
+                        return Err(ValidationError::AuthTokenExpired);
+                    }
+
+                    return ws_state
+                        .join_room(auth.claims.room_id, auth.claims.name, Some(auth.claims.id))
+                        .await
+                        .map_err(|err| match err {
+                            WebSocketStateError::NoRoom => ValidationError::NoRoom,
+                            WebSocketStateError::RoomFull => ValidationError::RoomFull,
+                            _ => ValidationError::InvalidPacket,
+                        });
+                }
+                _ => return Err(ValidationError::InvalidPacket),
             }
         }
-        _ => None,
+        _ => Err(ValidationError::InvalidPacket),
     }
 }
 
 async fn user_handle(
-    mut socket: WebSocket,
+    socket: WebSocket,
     who: SocketAddr,
     mut local_data: LocalUser,
     ws_state: &'static WsState,
@@ -167,10 +250,26 @@ async fn user_handle(
         .into_raw_bytes(),
     );
 
+    if local_data.is_new_owner {
+        let expired_time = get_elapsed_milis() + EXPIRATION;
+        let auth = Auth::new(id, name.clone(), current_room_id, expired_time);
+        let Ok(auth_str) = encode(&Header::default(), &auth, &ws_state.keys.encoding) else {
+            return;
+        };
+        let _ = dm_tx.send(Message::Text(
+            StringPacket::new("auth")
+                .arg(auth_str)
+                .arg(expired_time.to_string())
+                .into(),
+        ));
+    }
+
     let r_data = data.read().await;
-    let data_str = StringPacket::new("video_data")
-        .arg(video_data_json(r_data.deref(), local_data.permission.into()));
-    let _ = socket.send(Message::Text(data_str.into())).await;
+    let data_str = StringPacket::new("video_data").arg(video_data_json(
+        r_data.deref(),
+        local_data.permission.into(),
+    ));
+    let _ = dm_tx.send(Message::Text(data_str.into()));
     drop(r_data);
 
     // get the notified future before starting the tasks..
@@ -218,7 +317,7 @@ async fn user_handle(
                     };
                     Some(msg)
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT)) => None
+                _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => None
             };
             if let Ok(read_data) = data.try_read() {
                 drop(read_data); // Must drop it otherwise dead lock...
@@ -282,8 +381,8 @@ async fn check_permission_or_send_current(
         return ControlFlow::Continue(true);
     }
     let data = state_data.read().await;
-    let data_str = StringPacket::new("video_data")
-        .arg(video_data_json(data.deref(), user.permission.into()));
+    let data_str =
+        StringPacket::new("video_data").arg(video_data_json(data.deref(), user.permission.into()));
     if let Err(err) = dm_tx.send(data_str.into()) {
         return ControlFlow::Break(Some(err.to_string()));
     };
@@ -346,7 +445,8 @@ async fn process_message(
 
                     let read_state_data = state_data.read().await;
                     let needs_update = video_state != read_state_data.get_state()
-                        || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128) > SYNC_TIMEOUT;
+                        || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128)
+                            > SYNC_TIMEOUT;
                     if needs_update {
                         if local_data
                             .permission
@@ -457,16 +557,21 @@ pub async fn validate_and_handle_client(
             };
             msg
         },
-        _ = tokio::time::sleep(std::time::Duration::from_millis(TIMEOUT)) => return
+        _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => return
     };
 
-    let Some(local_user) = verify_join_msg(msg, ws_state, &who).await else {
-        let _ = socket.send(Message::Close(Some(CloseFrame {
-            code: crate::sturdy_ws::CloseCode::Protocol,
-            reason: std::borrow::Cow::Borrowed("Unexpected message was sent. Expected: `join_msg`.")
-        }))).await;
-        let _ = socket.close().await;
-        return;
+    let local_user = match verify_join_msg(msg, ws_state, &who).await {
+        Ok(local_user) => local_user,
+        Err(err) => {
+            let _ = socket
+                .send(Message::Close(Some(CloseFrame {
+                    code: crate::sturdy_ws::CloseCode::Error,
+                    reason: std::borrow::Cow::Owned(format!("{}", err)),
+                })))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
     };
 
     user_handle(socket, who, local_user, ws_state).await;

@@ -3,10 +3,12 @@ use std::sync::Arc;
 
 use crate::sturdy_ws::{CloseCode, CloseFrame, Message};
 
+use super::room_state::room_handle;
 use super::user_state::{LocalUser, UserState};
 use super::PERMISSION_ALL;
 use super::{room_state::RoomState, VideoData};
 use http::StatusCode;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use scc::HashIndex;
 use tokio::sync::broadcast;
 use tokio::sync::{Notify, RwLock};
@@ -17,6 +19,20 @@ use thiserror::Error;
 
 const MAX_USERS: usize = 100;
 const DEFAULT_WS: &str = "ws";
+
+pub(super) struct Keys {
+    pub encoding: EncodingKey,
+    pub decoding: DecodingKey,
+}
+
+impl Keys {
+    fn new(secret: &[u8]) -> Self {
+        Self {
+            encoding: EncodingKey::from_secret(secret),
+            decoding: DecodingKey::from_secret(secret),
+        }
+    }
+}
 
 #[derive(Debug, Error, InternalServerError)]
 pub enum WebSocketStateError {
@@ -37,13 +53,20 @@ pub enum WebSocketStateError {
 pub struct WsState {
     pub(super) users: HashIndex<Uuid, UserState>,
     pub(super) rooms: HashIndex<Uuid, RoomState>,
+    pub(super) keys: Keys,
 }
 
 impl Default for WsState {
     fn default() -> Self {
+        let keys = Keys::new(
+            std::env::var("JWT_KEY")
+                .unwrap_or("ChudiGBoBDudu42096546".into())
+                .as_bytes(),
+        );
         Self {
             users: HashIndex::with_capacity(20),
             rooms: HashIndex::with_capacity(10),
+            keys,
         }
     }
 }
@@ -65,14 +88,17 @@ impl WsState {
         let room = RoomState {
             id: room_id,
             name,
+            owner_id: None,
             broadcast_tx,
-            exit_notify,
+            exit_notify: exit_notify.clone(),
             data: data.clone(),
             remaining_users: Arc::new(AtomicUsize::new(max_users)),
             max_users,
         };
 
         let _ = self.rooms.insert_async(room_id, room).await;
+
+        tokio::spawn(room_handle(room_id, exit_notify, self));
 
         Ok((room_id, DEFAULT_WS.into()))
     }
@@ -95,17 +121,32 @@ impl WsState {
         &self,
         room_id: Uuid,
         name: String,
+        pref_id: Option<Uuid>,
     ) -> Result<LocalUser, WebSocketStateError> {
-        let Some((is_owner, decreased, data)) = self.rooms.read(&room_id, |_, v| {
-            (v.is_first_user(), v.decrease_remaining_users(), v.data.clone())
+        let id = Uuid::new_v4();
+        let mut is_new_owner = false;
+        // TODO: Seperate socket identifier Id(s) from the actual user Id probably if we ever imlement DB.
+        // Safety: We're reading/modifying `room_state.owner_id` only here.
+        let Some((is_owner, decreased, data)) = (unsafe {
+            self.rooms.update(&room_id, |_, v| {
+                let is_owner = if v.is_empty() && v.owner_id.is_none() {
+                    v.owner_id = Some(id);
+                    is_new_owner = true;
+                    true
+                } else {
+                    v.owner_id.is_some_and(|oid| Some(oid) == pref_id)
+                };
+
+                (is_owner, v.decrease_remaining_users(), v.data.clone())
+            })
         }) else {
             return Err(WebSocketStateError::NoRoom);
         };
         if !decreased {
             return Err(WebSocketStateError::RoomFull);
         }
+
         let data = data.read().await;
-        let id = Uuid::new_v4();
         let permission = if is_owner {
             PERMISSION_ALL.into()
         } else {
@@ -116,6 +157,7 @@ impl WsState {
             name,
             id,
             room_id,
+            is_new_owner,
         };
 
         return Ok(local_user);
@@ -138,7 +180,6 @@ impl WsState {
         if let None = self.rooms.read(&room_id, |_, v| v.close()) {
             return Err(WebSocketStateError::NoRoom);
         }
-        self.rooms.remove_async(&room_id).await;
         Ok(())
     }
 }

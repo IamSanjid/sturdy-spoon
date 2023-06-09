@@ -6,14 +6,16 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use super::BMsgSender;
+use super::ws_state::WsState;
 use super::VideoData;
+use super::{BMsgSender, CLIENT_TIMEOUT};
 
 #[derive(Clone)]
 pub struct RoomState {
     #[allow(unused)]
     pub(super) id: Uuid,
     pub(super) name: String,
+    pub(super) owner_id: Option<Uuid>,
     pub(super) broadcast_tx: BMsgSender,
     pub(super) exit_notify: Arc<Notify>,
     pub(super) data: Arc<RwLock<VideoData>>,
@@ -43,11 +45,28 @@ impl RoomState {
         self.remaining_users.load(Ordering::Relaxed) == 0
     }
 
-    pub(super) fn is_first_user(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.remaining_users.load(Ordering::Relaxed) == self.max_users
     }
 
     pub(super) fn close(&self) {
         self.exit_notify.notify_waiters();
     }
+}
+
+pub(super) async fn room_handle(
+    room_id: Uuid,
+    exit_notif: Arc<Notify>,
+    ws_state: &'static WsState,
+) {
+    loop {
+        exit_notif.notified().await;
+        tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)).await;
+        let res = ws_state.rooms.read(&room_id, |_, v| v.is_empty());
+        if matches!(res, None) || matches!(res, Some(true)) {
+            break;
+        }
+    }
+
+    ws_state.rooms.remove_async(&room_id).await;
 }

@@ -14,7 +14,7 @@ pub enum WebPageFileType {
 #[derive(Clone, FromRef)]
 pub struct ServerState {
     pub ws_state: &'static WsState,
-    pub web_dirs: &'static HashMap<WebPageFileType, PathBuf>,
+    web_dirs: &'static HashMap<WebPageFileType, PathBuf>,
 }
 
 impl ServerState {

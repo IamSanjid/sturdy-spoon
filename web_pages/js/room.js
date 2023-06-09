@@ -35,14 +35,28 @@ let waitingForUser = {
     "updateId": null,
 };
 
+let authOpt = localStorage.getItem("local.auth");
+if (authOpt !== null) {
+    const [auth_str, expiration_str] = authOpt.split("|.|");
+    const expiration = parseInt(expiration_str);
+    if (Date.now() > expiration) {
+        localStorage.removeItem("local.auth");
+        authOpt = null;    
+    } else {
+        authOpt = auth_str;
+        infoCollect.style = "display: None;";
+        connectToServer();
+    }
+}
+
+roomNameLabel.innerText = room_data.name;
+
 const positionToMs = function (pos = undefined) {
     if (typeof pos === "undefined") {
         pos = globalThis.player.getPosition();
     }
     return Math.floor(pos * 1000);
 }
-
-roomNameLabel.innerText = room_data.name;
 
 const handleMessage = function (message) {
     const [type, data] = new StrPacket("").from_str(message.data);
@@ -70,6 +84,9 @@ const handleMessage = function (message) {
             }
 
             globalThis.last_video_data = video_data;
+            break;
+        case "auth":
+            localStorage.setItem("local.auth", data[0] + "|.|" + data[1]);
             break;
         case "joined":
             console.log("Somebody joined: ");
@@ -314,8 +331,7 @@ const setupVideoPlayer = function (url, autostart = false) {
     return player;
 }
 
-joinRoomForm.onsubmit = (e) => {
-    e.preventDefault();
+function connectToServer() {
     if (typeof room_data.ws_path === "undefined") {
         return;
     }
@@ -323,18 +339,39 @@ joinRoomForm.onsubmit = (e) => {
     const client = new WebSocket(getWsUrl(room_data.ws_path));
     client.onopen = (e) => {
         console.log("ws opened: ", e);
-        client.send(new StrPacket("join_room").addArgs(room_data.room_id, name).to_str());
+        let packet; 
+        if (authOpt !== null) {
+            packet = new StrPacket("auth_join").addArgs(authOpt);
+        } else {
+            packet = new StrPacket("join_room").addArgs(room_data.room_id, name);
+        }
+        client.send(packet.to_str());
     }
     client.onclose = (e) => {
         console.log("ws closed: ", e);
+        if (authOpt !== null) {
+            localStorage.removeItem("local.auth");
+        }
+        const reason = e.reason.length > 0 ? e.reason : "Forced closed. Code: " + e.code;
+        alert("Error: " + reason);
         window.location.assign(getPathUrl());
     };
     client.onerror = (e) => {
         console.log("ws error: ", e);
+        if (authOpt !== null) {
+            localStorage.removeItem("local.auth");
+        }
+        const reason = e.reason.length > 0 ? e.reason : "Forced closed. Code: " + e.code;
+        alert("Error: " + reason);
         window.location.assign(getPathUrl());
     };
     client.onmessage = (e) => {
         handleMessage(e);
     }
     globalThis.ws_client = makeWsClient(client);
+}
+
+joinRoomForm.onsubmit = (e) => {
+    e.preventDefault();
+    connectToServer();
 };

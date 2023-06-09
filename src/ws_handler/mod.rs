@@ -19,6 +19,7 @@ pub const PERMISSION_CHANGER: usize = 0b010;
 pub const PERMISSION_ALL: usize =
     PERMISSION_RESTRICTED | PERMISSION_CONTROLLABLE | PERMISSION_CHANGER;
 
+pub const CLIENT_TIMEOUT: u64 = 60 * 2 * 1000; // 2 Minutes
 pub const SYNC_TIMEOUT: u128 = 5 * 1000; // 5 seconds
 pub const MAX_VIDEO_LEN: usize = 4 * 3600 * 1000; // 4 hours
 
