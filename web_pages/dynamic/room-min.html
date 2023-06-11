@@ -4,12 +4,19 @@
         <p>Joining room <b><span id="room-name" style="color: darkorange;"></span></b></p>
         <form id="room-join-form">
             <label for="name">Name:</label>
-            <input type="text" id="name" name="name" required><br>
+            <input type="text" id="name" name="name" required>
             <input type="submit" name="Join Room">
         </form>
     </div>
     <div id="main-view" style="display: none;">
-        <div id="player-div"></div>
+        <div id="jwplayer-view">
+            <div id="player-div"></div>
+        </div>
+        <div id="normal-player-view">
+            <video id="normal-player" playsinline controls>
+                "Your browser doesn't support HTML5 video"
+            </video>
+        </div>
         <input id="fileSelect" type="file"/><br>
         <button id="addSubBtn">Add Sub</button>
     </div>

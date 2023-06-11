@@ -16,6 +16,13 @@ function formToJson(form) {
         },
         "checkbox": (input) => {
             return input.checked;
+        },
+        "select-one": (input) => {
+            const dataType = input.getAttribute("data-type");
+            if (dataType === "number") {
+                return parseInt(input.value);
+            }
+            return input.value;
         }
     };
 
@@ -83,4 +90,64 @@ function makeWsClient(client) {
     wsClientObj.sendText = sendText.bind(wsClientObj);
     wsClientObj.close = close.bind(wsClientObj);
     return wsClientObj;
+}
+
+function makeVideoPlayer(videoElement) {
+    const videoObj = { 
+        inner: videoElement,
+    };
+
+    const controls = {
+        on: (event, callback) => {
+            switch (event) {
+                case "seek":
+                    videoObj.inner.onseeking = () => {
+                        const evt = {
+                            offset: videoObj.inner.currentTime
+                        }
+                        callback(evt);
+                    };
+                    break;
+                case "play":
+                    videoObj.inner.onplaying = callback;
+                    break;
+                case "pause":
+                    videoObj.inner.onpause = callback;
+                    break;
+                case "ready":
+                    videoObj.inner.oncanplay = callback;
+                    break;
+                case "error":
+                    videoObj.inner.onerror = callback;
+                    break;
+            }
+        },
+        seek: (time) => {
+            videoObj.inner.currentTime = time;
+        },
+        play: () => {
+            videoObj.inner.play();
+        },
+        pause: () => {
+            videoObj.inner.pause();
+        },
+        getCurrentTime: () => {
+            return videoObj.inner.currentTime;
+        },
+        getPosition: () => {
+            return videoObj.inner.currentTime;
+        },
+        getState: () => {
+            if (videoObj.inner.seeking) return "seeking";
+            if (videoObj.inner.paused) return "paused";
+            return "playing";
+        }
+    }
+
+    const fullVideoObj = {
+        ...videoObj,
+        ...controls
+    };
+
+    return fullVideoObj;
 }

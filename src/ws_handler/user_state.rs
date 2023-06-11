@@ -139,6 +139,7 @@ fn video_data_json(data: &VideoData, permission: usize) -> String {
         "url": data.get_url(),
         "time": data.get_time(),
         "state": data.get_state(),
+        "current_player": data.get_current_player(),
         "permission": permission
     })
     .to_string()

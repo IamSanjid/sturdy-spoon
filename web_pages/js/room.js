@@ -11,11 +11,18 @@ if (muteOpt !== null) {
 const STATE_PAUSE = 0;
 const STATE_PLAY = 1;
 
+const PLAYER_JW = 0;
+const PLAYER_NORMAL = 1;
+
 const PERMISSION_RESTRICTED = 0b000;
 const PERMISSION_CONTROLLABLE = 0b001;
 const PERMISSION_CHANGER = 0b010;
 
 const mainView = document.getElementById("main-view");
+const jwplayerView = document.getElementById("jwplayer-view");
+const normalPlayerView = document.getElementById("normal-player-view");
+const normalPlayer = document.getElementById("normal-player");
+
 const infoCollect = document.getElementById("info-collect");
 const roomNameLabel = document.getElementById("room-name");
 const joinRoomForm = document.getElementById("room-join-form");
@@ -36,6 +43,7 @@ let waitingForUser = {
     "url": "",
     "permission": -1,
     "updateId": null,
+    "currentPlayer": PLAYER_JW,
 };
 
 let authOpt = localStorage.getItem("local.auth");
@@ -44,7 +52,7 @@ if (authOpt !== null) {
     const expiration = parseInt(expiration_str);
     if (Date.now() > expiration) {
         localStorage.removeItem("local.auth");
-        authOpt = null;    
+        authOpt = null;
     } else {
         authOpt = auth_str;
         infoCollect.style = "display: None;";
@@ -67,16 +75,19 @@ const handleMessage = function (message) {
     switch (type) {
         case "video_data":
             const video_data = JSON.parse(data[0]);
+
             mainView.style = "";
             infoCollect.style = "display: None;";
 
-            if (waitingForUser["url"] !== video_data.url) {
+            if (waitingForUser["url"] !== video_data.url
+                || waitingForUser["currentPlayer"] !== video_data.current_player) {
                 let isNewInstance = typeof globalThis.player === "undefined";
                 if (!isNewInstance) {
                     delete globalThis.player;
                 }
-                globalThis.player = setupVideoPlayer(video_data.url, video_data.state === STATE_PLAY);
-                if (isNewInstance) {
+                waitingForUser["currentPlayer"] = video_data.current_player;
+                globalThis.player = setupVideoPlayer(video_data.current_player, video_data.url, video_data.state === STATE_PLAY);
+                if (video_data.current_player === PLAYER_JW && isNewInstance) {
                     globalThis.player.setMute(wasMute);
                 }
                 waitingForUser["url"] = video_data.url;
@@ -180,7 +191,7 @@ const updatePlayerState = function (time, state) {
 }
 
 const updateVideoPlayerControls = function (permission) {
-    if (typeof globalThis.player === "undefined") {
+    if (waitingForUser.currentPlayer !== PLAYER_JW || typeof globalThis.player === "undefined") {
         return;
     }
 
@@ -226,25 +237,7 @@ const updateVideoPlayerControls = function (permission) {
     waitingForUser["permission"] = permission;
 }
 
-const setupVideoPlayer = function (url, autostart = false) {
-    const player = jwplayer("player-div");
-    const player_config = {
-        playbackRateControls: [1],
-        preload: "auto",
-        sources: [
-            {
-                aspectratio: "16:9",
-                file: url,
-                label: "hls P",
-                preload: "auto",
-                type: "mp4",
-                width: "100%",
-            }
-        ],
-        autostart: autostart
-    };
-
-    player.setup(player_config);
+const initializePlayerEvents = function (player) {
     player['on']('ready', function () {
         const video_data = globalThis.last_video_data;
         const video_data_time = video_data.time / 1000;
@@ -266,7 +259,7 @@ const setupVideoPlayer = function (url, autostart = false) {
     });
     player['on']("seek", function (evt) {
         const currentEvt = "seek";
-        
+
         const video_data = globalThis.last_video_data;
 
         if (!waitingForUser[currentEvt]) {
@@ -330,7 +323,47 @@ const setupVideoPlayer = function (url, autostart = false) {
         }
         globalThis.ws_client.sendText("state", globalThis.player.getCurrentTime(), getPlayerState());
     }, 30 * 1000);
+}
 
+const setupVideoPlayer = function (index, url, autostart = false) {
+    switch (index) {
+        case PLAYER_JW:
+            return setupJwVideoPlayer(url, autostart);
+        case PLAYER_NORMAL:
+            return setupNormalVideoPlayer(url);
+        default:
+            throw new Error("Cannot setup unknown player.");
+    }
+}
+
+const setupJwVideoPlayer = function (url, autostart = false) {
+    const player = jwplayer("player-div");
+    const player_config = {
+        playbackRateControls: [1],
+        preload: "auto",
+        sources: [
+            {
+                aspectratio: "16:9",
+                file: url,
+                label: "hls P",
+                preload: "auto",
+                type: "mp4",
+                width: "100%",
+            }
+        ],
+        autostart: autostart
+    };
+
+    player.setup(player_config);
+    initializePlayerEvents(player);
+    return player;
+}
+
+const setupNormalVideoPlayer = function (url) {
+    const player = makeVideoPlayer(normalPlayer);
+    initializePlayerEvents(player);
+    normalPlayer.src = url;
+    normalPlayer.type = 'video/mp4';
     return player;
 }
 
@@ -342,7 +375,7 @@ function connectToServer() {
     const client = new WebSocket(getWsUrl(room_data.ws_path));
     client.onopen = (e) => {
         console.log("ws opened: ", e);
-        let packet; 
+        let packet;
         if (authOpt !== null) {
             packet = new StrPacket("auth_join").addArgs(authOpt);
         } else {
@@ -382,25 +415,41 @@ addSubBtn.onclick = () => {
         alert("No file selected!");
         return;
     }
+    
     const file = fileSelect.files[0];
+    const fileName = file.name.split('.').slice(0, -1).join('.');
     var tmppath = URL.createObjectURL(file);
-    const currentPlaylist = globalThis.player.getPlaylistItem();
     const lastState = globalThis.player.getState();
     const lastTime = globalThis.player.getCurrentTime();
-    currentPlaylist.tracks = [{
-        file: tmppath,
-        label: file.name.split('.').slice(0, -1).join('.'),
-        kind: "captions"
-    }];
 
-    globalThis.player.load(currentPlaylist);
+    if (waitingForUser["currentPlayer"] === PLAYER_JW) {
+        const currentPlaylist = globalThis.player.getPlaylistItem();
+        currentPlaylist.tracks.push({
+            file: tmppath,
+            label: fileName,
+            kind: "captions"
+        });
+        globalThis.player.load(currentPlaylist);
+    } else if (waitingForUser["currentPlayer"] === PLAYER_NORMAL) {
+        const track = document.createElement("track");
+        track.kind = "captions";
+        track.label = fileName;
+        track.src = tmppath; 
+        track.addEventListener("load", function() {
+            this.mode = "showing";
+            normalPlayer.textTracks[0].mode = "showing";
+        });
+
+        normalPlayer.appendChild(track);
+    }
+
     setTimeout(() => {
         if (typeof globalThis.player === "undefined") {
             return;
         }
-        globalThis.player.seek(lastTime);
+        forcePlayerAction("seek", lastTime);
         if (lastState === "playing") {
-            globalThis.player.play();
+            forcePlayerAction("play");
         }
     }, 250);
 }

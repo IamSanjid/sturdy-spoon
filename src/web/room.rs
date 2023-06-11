@@ -21,6 +21,7 @@ use base64::{
 };
 
 use crate::server_state::ServerState;
+use crate::ws_handler::PLAYER_MAX;
 use crate::ws_handler::ws_state::WebSocketStateError;
 use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
@@ -34,6 +35,7 @@ struct CreateRoomPayload {
     video_url: String,
     max_users: isize,
     global_control: bool,
+    player_index: usize,
 }
 
 #[derive(Serialize)]
@@ -85,17 +87,21 @@ fn parse_uuid_from_base64(id: String) -> Result<Uuid, impl IntoResponse> {
 async fn create(
     State(state): State<ServerState>,
     Json(create_room_payload): Json<CreateRoomPayload>,
-) -> Result<Json<Room>, WebSocketStateError> {
+) -> Result<Json<Room>, impl IntoResponse> {
+    if create_room_payload.player_index > PLAYER_MAX {
+        return Err((StatusCode::BAD_REQUEST, "Player Index out of bounds.").into_response());
+    }
     let data = if create_room_payload.global_control {
-        VideoData::new(create_room_payload.video_url).with_permission(PERMISSION_CONTROLLABLE)
+        VideoData::new(create_room_payload.video_url, create_room_payload.player_index).with_permission(PERMISSION_CONTROLLABLE)
     } else {
-        VideoData::new(create_room_payload.video_url)
+        VideoData::new(create_room_payload.video_url, create_room_payload.player_index)
     };
     let max_users = create_room_payload.max_users.abs() as usize;
     let (id, ws_path) = state
         .ws_state
         .create_room(data, create_room_payload.name, max_users)
-        .await?;
+        .await
+        .map_err(|err| err.into_response())?;
 
     Ok(Json(Room { id, ws_path }))
 }

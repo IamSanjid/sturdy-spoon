@@ -19,6 +19,11 @@ pub const PERMISSION_CHANGER: usize = 0b010;
 pub const PERMISSION_ALL: usize =
     PERMISSION_RESTRICTED | PERMISSION_CONTROLLABLE | PERMISSION_CHANGER;
 
+#[allow(unused)]
+pub const PLAYER_JW: usize = 0;
+pub const PLAYER_NORMAL: usize = 1;
+pub const PLAYER_MAX: usize = PLAYER_NORMAL;
+
 pub const CLIENT_TIMEOUT: u64 = 60 * 2 * 1000; // 2 Minutes
 pub const SYNC_TIMEOUT: u128 = 5 * 1000; // 5 seconds
 pub const MAX_VIDEO_LEN: usize = 4 * 3600 * 1000; // 4 hours
@@ -69,15 +74,17 @@ pub struct VideoData {
     time: usize,            // in Miliseconds
     state: usize,           // 0: Pause, 1: Play
     permission: Permission, // 0: Restricted, 1: Can control video
+    current_player: usize,
     last_time_updated: u128,
 }
 
 impl VideoData {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, current_player: usize) -> Self {
         Self {
             url,
             time: 0,
             state: 0,
+            current_player,
             permission: Permission::default(),
             last_time_updated: get_elapsed_milis(),
         }
@@ -121,6 +128,14 @@ impl VideoData {
         if self.state == STATE_PLAY {
             self.time += diff as usize;
         }
+    }
+   
+    pub fn get_current_player(&self) -> usize {
+        self.current_player
+    }
+
+    pub fn set_current_player(&mut self, current_player: usize) {
+        self.current_player = current_player;
     }
 
     pub fn get_permission(&self) -> Permission {
