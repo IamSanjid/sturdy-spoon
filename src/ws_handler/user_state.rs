@@ -456,12 +456,24 @@ async fn process_message(
                             let mut write_state_data = state_data.write().await;
                             write_state_data.set_time(time);
                             write_state_data.set_state(video_state);
-                            return ControlFlow::Continue(true);
+                            
+                            let msg: Message = StringPacket::new("state")
+                                .arg(time.to_string())
+                                .arg(video_state.to_string()).into();
+                            if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
+                                return ControlFlow::Break(Some(err.to_string()));
+                            }
+                        } else {
+                            let msg = StringPacket::new("state")
+                                .arg(read_state_data.get_time().to_string())
+                                .arg(read_state_data.get_state().to_string());
+                            if let Err(err) = dm_tx.send(msg.into()) {
+                                return ControlFlow::Break(Some(err.to_string()));
+                            }
                         }
-                        let data_str = StringPacket::new("state")
-                            .arg(read_state_data.get_time().to_string())
-                            .arg(read_state_data.get_state().to_string());
-                        if let Err(err) = dm_tx.send(data_str.into()) {
+                    } else {
+                        let msg = StringPacket::new("state_ok");
+                        if let Err(err) = dm_tx.send(msg.into()) {
                             return ControlFlow::Break(Some(err.to_string()));
                         }
                     }

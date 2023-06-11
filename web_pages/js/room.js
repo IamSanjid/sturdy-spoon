@@ -21,6 +21,9 @@ const roomNameLabel = document.getElementById("room-name");
 const joinRoomForm = document.getElementById("room-join-form");
 const nameEl = document.getElementById("name");
 
+const fileSelect = document.getElementById("fileSelect");
+const addSubBtn = document.getElementById("addSubBtn");
+
 const PLAYER_STATES = {
     "playing": STATE_PLAY,
     "paused": STATE_PAUSE,
@@ -226,7 +229,7 @@ const updateVideoPlayerControls = function (permission) {
 const setupVideoPlayer = function (url, autostart = false) {
     const player = jwplayer("player-div");
     const player_config = {
-        playbackRateControls: [0.5, 0.75, 1, 1.25, 1.5, 2],
+        playbackRateControls: [1],
         preload: "auto",
         sources: [
             {
@@ -369,6 +372,37 @@ function connectToServer() {
         handleMessage(e);
     }
     globalThis.ws_client = makeWsClient(client);
+}
+
+addSubBtn.onclick = () => {
+    if (typeof globalThis.player === "undefined") {
+        return;
+    }
+    if (typeof fileSelect.files === "undefined" || fileSelect.files.length <= 0) {
+        alert("No file selected!");
+        return;
+    }
+    const file = fileSelect.files[0];
+    var tmppath = URL.createObjectURL(file);
+    const currentPlaylist = globalThis.player.getPlaylistItem();
+    const lastState = globalThis.player.getState();
+    const lastTime = globalThis.player.getCurrentTime();
+    currentPlaylist.tracks = [{
+        file: tmppath,
+        label: file.name.split('.').slice(0, -1).join('.'),
+        kind: "captions"
+    }];
+
+    globalThis.player.load(currentPlaylist);
+    setTimeout(() => {
+        if (typeof globalThis.player === "undefined") {
+            return;
+        }
+        globalThis.player.seek(lastTime);
+        if (lastState === "playing") {
+            globalThis.player.play();
+        }
+    }, 250);
 }
 
 joinRoomForm.onsubmit = (e) => {
