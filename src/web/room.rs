@@ -21,10 +21,10 @@ use base64::{
 };
 
 use crate::server_state::ServerState;
-use crate::ws_handler::PLAYER_MAX;
 use crate::ws_handler::ws_state::WebSocketStateError;
 use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
+use crate::ws_handler::PLAYER_MAX;
 
 const URL_SAFE_ENGINE: engine::GeneralPurpose =
     engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD);
@@ -92,9 +92,16 @@ async fn create(
         return Err((StatusCode::BAD_REQUEST, "Player Index out of bounds.").into_response());
     }
     let data = if create_room_payload.global_control {
-        VideoData::new(create_room_payload.video_url, create_room_payload.player_index).with_permission(PERMISSION_CONTROLLABLE)
+        VideoData::new(
+            create_room_payload.video_url,
+            create_room_payload.player_index,
+        )
+        .with_permission(PERMISSION_CONTROLLABLE)
     } else {
-        VideoData::new(create_room_payload.video_url, create_room_payload.player_index)
+        VideoData::new(
+            create_room_payload.video_url,
+            create_room_payload.player_index,
+        )
     };
     let max_users = create_room_payload.max_users.abs() as usize;
     let (id, ws_path) = state

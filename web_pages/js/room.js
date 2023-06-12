@@ -55,7 +55,7 @@ if (authOpt !== null) {
         authOpt = null;
     } else {
         authOpt = auth_str;
-        infoCollect.style = "display: None;";
+        joinRoomForm.style = "display: None;";
         connectToServer();
     }
 }
@@ -328,8 +328,12 @@ const initializePlayerEvents = function (player) {
 const setupVideoPlayer = function (index, url, autostart = false) {
     switch (index) {
         case PLAYER_JW:
+            jwplayerView.style = "";
+            normalPlayerView.style = "display: none;";
             return setupJwVideoPlayer(url, autostart);
         case PLAYER_NORMAL:
+            normalPlayerView.style = "";
+            jwplayerView.style = "display: none;";
             return setupNormalVideoPlayer(url);
         default:
             throw new Error("Cannot setup unknown player.");

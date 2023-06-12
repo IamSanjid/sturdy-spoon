@@ -129,7 +129,7 @@ impl VideoData {
             self.time += diff as usize;
         }
     }
-   
+
     pub fn get_current_player(&self) -> usize {
         self.current_player
     }
