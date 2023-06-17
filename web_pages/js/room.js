@@ -28,7 +28,7 @@ const roomNameLabel = document.getElementById("room-name");
 const joinRoomForm = document.getElementById("room-join-form");
 const nameEl = document.getElementById("name");
 
-const fileSelect = document.getElementById("fileSelect");
+const ccFileSelect = document.getElementById("ccFileSelect");
 const addSubBtn = document.getElementById("addSubBtn");
 
 const PLAYER_STATES = {
@@ -41,10 +41,13 @@ let waitingForUser = {
     "pause": true,
     "seek": true,
     "url": "",
+    "cc_url": "",
     "permission": -1,
     "updateId": null,
     "currentPlayer": PLAYER_JW,
 };
+
+let currentCC = null;
 
 let authOpt = localStorage.getItem("local.auth");
 if (authOpt !== null) {
@@ -81,6 +84,7 @@ const handleMessage = function (message) {
 
             if (waitingForUser["url"] !== video_data.url
                 || waitingForUser["currentPlayer"] !== video_data.current_player) {
+                clearCurrentCC();
                 let isNewInstance = typeof globalThis.player === "undefined";
                 if (!isNewInstance) {
                     delete globalThis.player;
@@ -95,6 +99,10 @@ const handleMessage = function (message) {
                 const video_data_time = video_data.time / 1000;
                 updateVideoPlayerControls(video_data.permission);
                 updatePlayerState(video_data_time, video_data.state);
+            }
+
+            if (waitingForUser["cc_url"] !== video_data.cc_url) {
+                addCurrentCC(cc_url, "Current CC");
             }
 
             globalThis.last_video_data = video_data;
@@ -371,6 +379,92 @@ const setupNormalVideoPlayer = function (url) {
     return player;
 }
 
+const clearCurrentCC = function () {
+    if (typeof globalThis.player === "undefined") {
+        currentCC = null;
+        return;
+    }
+    const lastState = globalThis.player.getState();
+    const lastTime = globalThis.player.getCurrentTime();
+
+    if (waitingForUser["currentPlayer"] === PLAYER_JW) {
+        const currentPlaylist = globalThis.player.getPlaylistItem();
+        if (currentCC !== null && typeof currentCC === "number" && currentPlaylist.tracks.length > currentCC) {
+            currentPlaylist.tracks[currentCC] = {};
+        }
+        globalThis.player.load(currentPlaylist);
+    } else if (waitingForUser["currentPlayer"] === PLAYER_NORMAL) {
+        if (currentCC !== null) {
+            normalPlayer.removeChild(currentCC);
+        }
+    }
+
+    setTimeout(() => {
+        if (typeof globalThis.player === "undefined") {
+            return;
+        }
+        forcePlayerAction("seek", lastTime);
+        if (lastState === "playing") {
+            forcePlayerAction("play");
+        }
+    }, 250);
+    currentCC = null;
+}
+
+const addCurrentCC = function (url, fileName) {
+    const lastState = globalThis.player.getState();
+    const lastTime = globalThis.player.getCurrentTime();
+
+    if (waitingForUser["currentPlayer"] === PLAYER_JW) {
+        const currentPlaylist = globalThis.player.getPlaylistItem();
+        if (currentCC === null) {
+            currentCC = currentPlaylist.tracks.length;
+            currentPlaylist.tracks.push({
+                file: url,
+                label: fileName,
+                kind: "captions"
+            });
+        } else {
+            currentPlaylist.tracks[currentCC] = {
+                file: url,
+                label: fileName,
+                kind: "captions"
+            };
+        }
+        globalThis.player.load(currentPlaylist);
+    } else if (waitingForUser["currentPlayer"] === PLAYER_NORMAL) {
+        if (currentCC !== null) {
+            normalPlayer.removeChild(currentCC);
+        }
+        
+        currentCC = document.createElement("track");
+        currentCC.kind = "captions";
+        currentCC.label = fileName;
+        currentCC.src = url; 
+        currentCC.addEventListener("load", function() {
+            this.mode = "showing";
+            for (track of normalPlayer.textTracks) {
+                if (track === currentCC) {
+                    track.mode = "showing";
+                    break;
+                }
+            }
+        });
+
+        normalPlayer.appendChild(currentCC);
+    }
+
+    setTimeout(() => {
+        if (typeof globalThis.player === "undefined") {
+            return;
+        }
+        forcePlayerAction("seek", lastTime);
+        if (lastState === "playing") {
+            forcePlayerAction("play");
+        }
+    }, 250);
+}
+
 function connectToServer() {
     if (typeof room_data.ws_path === "undefined") {
         return;
@@ -415,47 +509,15 @@ addSubBtn.onclick = () => {
     if (typeof globalThis.player === "undefined") {
         return;
     }
-    if (typeof fileSelect.files === "undefined" || fileSelect.files.length <= 0) {
+    if (typeof ccFileSelect.files === "undefined" || ccFileSelect.files.length <= 0) {
         alert("No file selected!");
         return;
     }
     
-    const file = fileSelect.files[0];
-    const fileName = file.name.split('.').slice(0, -1).join('.');
-    var tmppath = URL.createObjectURL(file);
-    const lastState = globalThis.player.getState();
-    const lastTime = globalThis.player.getCurrentTime();
-
-    if (waitingForUser["currentPlayer"] === PLAYER_JW) {
-        const currentPlaylist = globalThis.player.getPlaylistItem();
-        currentPlaylist.tracks.push({
-            file: tmppath,
-            label: fileName,
-            kind: "captions"
-        });
-        globalThis.player.load(currentPlaylist);
-    } else if (waitingForUser["currentPlayer"] === PLAYER_NORMAL) {
-        const track = document.createElement("track");
-        track.kind = "captions";
-        track.label = fileName;
-        track.src = tmppath; 
-        track.addEventListener("load", function() {
-            this.mode = "showing";
-            normalPlayer.textTracks[0].mode = "showing";
-        });
-
-        normalPlayer.appendChild(track);
-    }
-
-    setTimeout(() => {
-        if (typeof globalThis.player === "undefined") {
-            return;
-        }
-        forcePlayerAction("seek", lastTime);
-        if (lastState === "playing") {
-            forcePlayerAction("play");
-        }
-    }, 250);
+    const file = ccFileSelect.files[0];
+    //const fileName = file.name.split('.').slice(0, -1).join('.');
+    const tmppath = URL.createObjectURL(file);
+    addCurrentCC(tmppath, "Current CC");
 }
 
 joinRoomForm.onsubmit = (e) => {

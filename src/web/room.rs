@@ -33,6 +33,7 @@ const URL_SAFE_ENGINE: engine::GeneralPurpose =
 struct CreateRoomPayload {
     name: String,
     video_url: String,
+    cc_url: String,
     max_users: isize,
     global_control: bool,
     player_index: usize,
@@ -94,12 +95,14 @@ async fn create(
     let data = if create_room_payload.global_control {
         VideoData::new(
             create_room_payload.video_url,
+            create_room_payload.cc_url,
             create_room_payload.player_index,
         )
         .with_permission(PERMISSION_CONTROLLABLE)
     } else {
         VideoData::new(
             create_room_payload.video_url,
+            create_room_payload.cc_url,
             create_room_payload.player_index,
         )
     };

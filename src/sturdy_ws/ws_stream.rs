@@ -8,12 +8,9 @@
 //! Each WebSocket stream implements the required `Stream` and `Sink` traits,
 //! so the socket is just a stream of messages coming in and going out.
 use std::io::{Read, Write};
-use std::ops::DerefMut;
-use std::sync::Arc;
 
 use super::compat::{cvt, AllowStd, ContextWaker};
 use super::sturdy_tungstenite::{
-    self as tungstenite,
     error::Error as WsError,
     protocol::{Message, Role, WebSocket, WebSocketConfig},
 };
@@ -22,7 +19,7 @@ use futures_util::ready;
 use futures_util::{
     sink::{Sink, SinkExt},
     stream::{FusedStream, Stream},
-    Future, FutureExt,
+    Future,
 };
 use log::*;
 use std::{
@@ -30,7 +27,6 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Mutex, MutexGuard};
 
 use super::sturdy_tungstenite::protocol::CloseFrame;
 
@@ -101,16 +97,6 @@ impl<S> WebSocketStream<S> {
         f(&mut self.inner)
     }
 
-    fn with_raw_context<F, R>(&mut self, f: F) -> R
-    where
-        S: Unpin,
-        F: FnOnce(&mut WebSocket<AllowStd<S>>) -> R,
-        AllowStd<S>: Read + Write,
-    {
-        trace!("{}:{} WebSocketStream.with_raw_context", file!(), line!());
-        f(&mut self.inner)
-    }
-
     /// Returns a shared reference to the inner stream.
     pub fn get_ref(&self) -> &S
     where
@@ -138,12 +124,13 @@ impl<S> WebSocketStream<S> {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         let msg = msg.map(|msg| msg.into_owned());
-        //let frame: Frame = Message::Close(msg).into();
-        //self.inner.write_raw(frame.into())
         self.send(Message::Close(msg)).await
     }
 
-    pub fn write_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError>
+    /// Write raw frame bytes to the underlying web socket
+    ///
+    /// **Safety**: The bytes must be valid frame bytes.
+    pub unsafe fn write_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError>
     where
         S: AsyncRead + AsyncWrite + Unpin,
     {
@@ -169,11 +156,11 @@ where
 
         match futures_util::ready!(self.with_context(Some((ContextWaker::Read, cx)), |s| {
             trace!(
-                "{}:{} Stream.with_context poll_next -> read_message()",
+                "{}:{} Stream.with_context poll_next -> read()",
                 file!(),
                 line!()
             );
-            cvt(s.read_message())
+            cvt(s.read())
         })) {
             Ok(v) => Poll::Ready(Some(Ok(v))),
             Err(e) => {
@@ -203,14 +190,14 @@ where
 {
     type Error = WsError;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self).with_context(Some((ContextWaker::Write, cx)), |s| cvt(s.write_pending()))
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        match (*self).with_context(None, |s| s.write_message(item)) {
+        match (*self).with_context(None, |s| s.write(item)) {
             Ok(()) => Ok(()),
-            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(WsError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 // the message was accepted and queued
                 // isn't an error.
                 Ok(())
@@ -223,21 +210,29 @@ where
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        (*self).with_context(Some((ContextWaker::Write, cx)), |s| cvt(s.write_pending()))
+        (*self)
+            .with_context(Some((ContextWaker::Write, cx)), |s| cvt(s.flush()))
+            .map(|r| {
+                // WebSocket connection has just been closed. Flushing completed, not an error.
+                match r {
+                    Err(WsError::ConnectionClosed) => Ok(()),
+                    other => other,
+                }
+            })
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let res = if self.closing {
-            // After queueing it, we call `write_pending` to drive the close handshake to completion.
-            (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.write_pending())
+            // After queueing it, we call `flush` to drive the close handshake to completion.
+            (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.flush())
         } else {
             (*self).with_context(Some((ContextWaker::Write, cx)), |s| s.close(None))
         };
 
         match res {
             Ok(()) => Poll::Ready(Ok(())),
-            Err(tungstenite::Error::ConnectionClosed) => Poll::Ready(Ok(())),
-            Err(tungstenite::Error::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(WsError::ConnectionClosed) => Poll::Ready(Ok(())),
+            Err(WsError::Io(err)) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 trace!("WouldBlock");
                 self.closing = true;
                 Poll::Pending

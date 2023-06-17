@@ -3,7 +3,7 @@
     <form id="create-room-form" , action="/room/create">
         <label for="name">Name:</label>
         <input type="text" id="name" name="name" required><br>
-        <label for="name">Video Url:</label>
+        <label for="video_url">Video Url:</label>
         <!-- <input type="text" id="video_url" name="video_url"
             value="https://ta-027.agucdn.com/1ab5d45273a9183bebb58eb74d5722d8ea6384f350caf008f08cf018f1f0566d0cb82a2a799830d1af97cd3f4b6a9a81ef3aed2fb783292b1abcf1b8560a1d1aa308008b88420298522a9f761e5aa1024fbe74e5aa853cfc933cd1219327d1232e91847a185021b184c027f97ae732b3708ee6beb80ba5db6628ced43f1196fe/5bbf6d6f69065d410c40d623afde34fb/ep.1.1677674042.m3u8"
             required><br> -->
@@ -12,9 +12,11 @@
         <input type="number" id="max_users" name="max_users" required> <br>
         <input type="checkbox" id="global_control" name="global_control">
         <label for="global_control">Everyone can control video player.</label><br>
+        <label for="cc_url">Subtitle(CC) Url:</label>
+        <input type="text" id="cc_url" name="cc_url" value=""><br>
         <label for="player_index">Choose Player:</label>
         <select id="player_index" data-type="number" name="player_index" size="1">
-            <option value="0">JW Player(recommended) .mkv files not supported.</option>
+            <option value="0">JW Player(recommended) .mkv files with unknown audio codec is not supported.</option>
             <option value="1">Normal Player(can try to play .mkv files, audio might not be played)<br></option>
           </select><br>
         <input type="submit" name="Create Room">

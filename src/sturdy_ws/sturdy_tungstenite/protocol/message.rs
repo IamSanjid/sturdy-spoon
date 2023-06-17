@@ -191,7 +191,7 @@ impl Message {
         Message::Text(string.into())
     }
 
-    /// Create a new binary WebSocket message by converting to Vec<u8>.
+    /// Create a new binary WebSocket message by converting to `Vec<u8>`.
     pub fn binary<B>(bin: B) -> Message
     where
         B: Into<Vec<u8>>,
@@ -219,7 +219,7 @@ impl Message {
         matches!(*self, Message::Pong(_))
     }
 
-    /// Indicates whether a message ia s close message.
+    /// Indicates whether a message is a close message.
     pub fn is_close(&self) -> bool {
         matches!(*self, Message::Close(_))
     }
@@ -326,51 +326,5 @@ impl fmt::Display for Message {
         } else {
             write!(f, "Binary Data<length={}>", self.len())
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display() {
-        let t = Message::text("test".to_owned());
-        assert_eq!(t.to_string(), "test".to_owned());
-
-        let bin = Message::binary(vec![0, 1, 3, 4, 241]);
-        assert_eq!(bin.to_string(), "Binary Data<length=5>".to_owned());
-    }
-
-    #[test]
-    fn binary_convert() {
-        let bin = [6u8, 7, 8, 9, 10, 241];
-        let msg = Message::from(&bin[..]);
-        assert!(msg.is_binary());
-        assert!(msg.into_text().is_err());
-    }
-
-    #[test]
-    fn binary_convert_vec() {
-        let bin = vec![6u8, 7, 8, 9, 10, 241];
-        let msg = Message::from(bin);
-        assert!(msg.is_binary());
-        assert!(msg.into_text().is_err());
-    }
-
-    #[test]
-    fn binary_convert_into_vec() {
-        let bin = vec![6u8, 7, 8, 9, 10, 241];
-        let bin_copy = bin.clone();
-        let msg = Message::from(bin);
-        let serialized: Vec<u8> = msg.into();
-        assert_eq!(bin_copy, serialized);
-    }
-
-    #[test]
-    fn text_convert() {
-        let s = "kiwotsukete";
-        let msg = Message::from(s);
-        assert!(msg.is_text());
     }
 }

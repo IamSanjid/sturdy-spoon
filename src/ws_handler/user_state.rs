@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     common::utils::get_elapsed_milis,
-    sturdy_ws::{ArcRawBytes, CloseFrame, Frame, Message, WebSocket},
+    sturdy_ws::{CloseFrame, Message, WebSocket, WebSocketMessage},
     ws_handler::{
         ws_state::WebSocketStateError, CLIENT_TIMEOUT, STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT,
     },
@@ -128,15 +128,16 @@ impl Into<String> for StringPacket {
     }
 }
 
-impl Into<Message> for StringPacket {
-    fn into(self) -> Message {
-        Message::Text(self.into())
+impl Into<WebSocketMessage> for StringPacket {
+    fn into(self) -> WebSocketMessage {
+        WebSocketMessage::Text(self.into())
     }
 }
 
 fn video_data_json(data: &VideoData, permission: usize) -> String {
     json!({
         "url": data.get_url(),
+        "cc_url": data.get_cc_url(),
         "time": data.get_time(),
         "state": data.get_state(),
         "current_player": data.get_current_player(),
@@ -145,6 +146,7 @@ fn video_data_json(data: &VideoData, permission: usize) -> String {
     .to_string()
 }
 
+// TODO: Implement something like `StringPacket`.
 fn check_str_packet<'a>(input_str: &'a str) -> Option<(&'a str, &'a str)> {
     let Some(input_str) = input_str.strip_prefix("||-=-||") else { return None; };
     let mut full_data = input_str.split("-=-");
@@ -161,7 +163,6 @@ async fn verify_join_msg(
     match msg {
         Message::Text(t) => {
             println!(">>> {}: {}", who, &t);
-            // TODO: Make the packet data splitter more generic way.
             let Some((data_type, data)) = check_str_packet(&t) else { return Err(ValidationError::InvalidPacket); };
             match data_type {
                 "join_room" => {
@@ -242,13 +243,13 @@ async fn user_handle(
         };
 
     let _ = broadcast_tx.send(
-        Message::Text(
+        WebSocketMessage::Text(
             StringPacket::new("joined")
                 .arg(name.clone())
                 .arg(id.to_string())
                 .into(),
         )
-        .into_raw_bytes(),
+        .into_server_shared_bytes(),
     );
 
     if local_data.is_new_owner {
@@ -257,7 +258,7 @@ async fn user_handle(
         let Ok(auth_str) = encode(&Header::default(), &auth, &ws_state.keys.encoding) else {
             return;
         };
-        let _ = dm_tx.send(Message::Text(
+        let _ = dm_tx.send(WebSocketMessage::Text(
             StringPacket::new("auth")
                 .arg(auth_str)
                 .arg(expired_time.to_string())
@@ -270,7 +271,7 @@ async fn user_handle(
         r_data.deref(),
         local_data.permission.into(),
     ));
-    let _ = dm_tx.send(Message::Text(data_str.into()));
+    let _ = dm_tx.send(WebSocketMessage::Text(data_str.into()));
     drop(r_data);
 
     // get the notified future before starting the tasks..
@@ -280,28 +281,28 @@ async fn user_handle(
     let (socket, mut receiver) = socket.sock_split();
     let mut send_task = tokio::spawn(async move {
         loop {
-            tokio::select! {
+            let msg = tokio::select! {
                 msg = dm_rx.recv() => {
                     let Some(msg) = msg else {
                         break;
                     };
-                    if let Err(_) = socket.lock().await.send(msg).await {
-                        break;
-                    }
+                    msg.into_server_shared_bytes()
                 },
                 msg = broadcast_rx.recv() => {
                     let Ok(msg) = msg else {
                         break;
                     };
-                    let mut socket = socket.lock().await;
-                    if let Err(err) = socket.send_raw(msg.as_ref()) {
-                        match err {
-                            crate::sturdy_ws::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                let frame: Frame = msg.as_ref().clone().into();
-                                let _ = socket.send(Message::Frame(frame)).await;
-                            }
-                            _ => {}
-                        }
+                    msg
+                }
+            };
+            let mut socket = socket.lock().await;
+            unsafe {
+                // We trust ourselves :")
+                if let Err(err) = socket.send_raw(msg.as_ref()) {
+                    match err {
+                        crate::sturdy_ws::Error::Io(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        _ => break,
                     }
                 }
             }
@@ -358,13 +359,13 @@ async fn user_handle(
     } else {
         ws_state.rooms.read(&current_room_id, |_, v| {
             v.broadcast_tx.send(
-                Message::Text(
+                WebSocketMessage::Text(
                     StringPacket::new("left")
                         .arg(name)
                         .arg(id.to_string())
                         .into(),
                 )
-                .into_raw_bytes(),
+                .into_server_shared_bytes(),
             )
         });
     }
@@ -458,11 +459,11 @@ async fn process_message(
                             write_state_data.set_time(time);
                             write_state_data.set_state(video_state);
 
-                            let msg: Message = StringPacket::new("state")
+                            let msg: WebSocketMessage = StringPacket::new("state")
                                 .arg(time.to_string())
                                 .arg(video_state.to_string())
                                 .into();
-                            if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
+                            if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
                                 return ControlFlow::Break(Some(err.to_string()));
                             }
                         } else {
@@ -496,8 +497,9 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
+                    let msg: WebSocketMessage =
+                        StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }
@@ -517,8 +519,9 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
+                    let msg: WebSocketMessage =
+                        StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }
@@ -538,8 +541,9 @@ async fn process_message(
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    let msg: Message = StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_raw_bytes()) {
+                    let msg: WebSocketMessage =
+                        StringPacket::new(data_type).arg(time.to_string()).into();
+                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
                         return ControlFlow::Break(Some(err.to_string()));
                     }
                 }

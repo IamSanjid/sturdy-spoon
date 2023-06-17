@@ -1,0 +1,1 @@
+It's a direct copy of [tungstenite-rs's](https://github.com/snapview/tungstenite-rs) web socket implementation, with a slight modification to allow writing to the underlying *socket stream* directly.

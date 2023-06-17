@@ -6,8 +6,9 @@ pub mod ws_state;
 
 pub use user_state::validate_and_handle_client;
 
-pub(super) type WSMsgSender = tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::Message>;
-pub(super) type BMsgSender = tokio::sync::broadcast::Sender<std::sync::Arc<Vec<u8>>>;
+pub(super) type WSMsgSender =
+    tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::WebSocketMessage>;
+pub(super) type BMsgSender = tokio::sync::broadcast::Sender<std::sync::Arc<[u8]>>;
 
 pub const STATE_PAUSE: usize = 0;
 pub const STATE_PLAY: usize = 1;
@@ -71,6 +72,7 @@ impl From<usize> for Permission {
 
 pub struct VideoData {
     url: String,
+    cc_url: String,
     time: usize,            // in Miliseconds
     state: usize,           // 0: Pause, 1: Play
     permission: Permission, // 0: Restricted, 1: Can control video
@@ -79,9 +81,10 @@ pub struct VideoData {
 }
 
 impl VideoData {
-    pub fn new(url: String, current_player: usize) -> Self {
+    pub fn new(url: String, cc_url: String, current_player: usize) -> Self {
         Self {
             url,
+            cc_url,
             time: 0,
             state: 0,
             current_player,
@@ -96,11 +99,19 @@ impl VideoData {
     }
 
     pub fn get_url(&self) -> String {
-        self.url.to_owned()
+        self.url.clone()
     }
 
     pub fn update_url(&mut self, url: String) {
         self.url = url;
+    }
+
+    pub fn get_cc_url(&self) -> String {
+        self.cc_url.clone()
+    }
+
+    pub fn update_cc_url(&mut self, cc_url: String) {
+        self.cc_url = cc_url;
     }
 
     pub fn get_state(&self) -> usize {

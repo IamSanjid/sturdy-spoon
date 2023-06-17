@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use crate::sturdy_ws::{CloseCode, CloseFrame, Message};
+use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
 use super::room_state::room_handle;
 use super::user_state::{LocalUser, UserState};
@@ -164,7 +164,7 @@ impl WsState {
 
     pub fn kick_user(&self, id: Uuid) -> Result<(), WebSocketStateError> {
         if let None = self.users.read(&id, |_, v| {
-            v.tx.send(Message::Close(Some(CloseFrame {
+            v.tx.send(WebSocketMessage::Close(Some(CloseFrame {
                 code: CloseCode::Protocol,
                 reason: std::borrow::Cow::Borrowed("Test"),
             })))

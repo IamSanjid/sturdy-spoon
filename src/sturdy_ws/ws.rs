@@ -59,8 +59,16 @@ impl<F> std::fmt::Debug for WebSocketUpgrade<F> {
 
 impl<F> WebSocketUpgrade<F> {
     /// Set the size of the internal message send queue.
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn max_send_queue(mut self, max: usize) -> Self {
         self.config.max_send_queue = Some(max);
+        self
+    }
+
+    /// Set the maximum write buffer size (defaults to usize::MAX)
+    pub fn max_write_buffer_size(mut self, max: usize) -> Self {
+        self.config.max_write_buffer_size = max;
         self
     }
 
@@ -358,7 +366,10 @@ impl WebSocket {
         self.inner.send(msg).await.map_err(Error::new)
     }
 
-    pub fn send_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError> {
+    /// Send raw bytes of a message.
+    ///
+    /// **Safety**: The bytes must be valid message bytes.
+    pub unsafe fn send_raw<B: AsRef<[u8]>>(&mut self, bytes: B) -> Result<(), WsError> {
         self.inner.write_raw(bytes)
     }
 

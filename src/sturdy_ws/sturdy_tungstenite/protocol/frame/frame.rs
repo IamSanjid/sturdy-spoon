@@ -413,7 +413,7 @@ payload: 0x{}
             self.payload.len(),
             self.payload
                 .iter()
-                .map(|byte| format!("{:x}", byte))
+                .map(|byte| format!("{:02x}", byte))
                 .collect::<String>()
         )
     }
@@ -467,43 +467,5 @@ impl LengthFormat {
             127 => LengthFormat::U64,
             b => LengthFormat::U8(b),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use super::super::coding::{Data, OpCode};
-    use std::io::Cursor;
-
-    #[test]
-    fn parse() {
-        let mut raw: Cursor<Vec<u8>> =
-            Cursor::new(vec![0x82, 0x07, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
-        let (header, length) = FrameHeader::parse(&mut raw).unwrap().unwrap();
-        assert_eq!(length, 7);
-        let mut payload = Vec::new();
-        raw.read_to_end(&mut payload).unwrap();
-        let frame = Frame::from_payload(header, payload);
-        assert_eq!(
-            frame.into_data(),
-            vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]
-        );
-    }
-
-    #[test]
-    fn format() {
-        let frame = Frame::ping(vec![0x01, 0x02]);
-        let mut buf = Vec::with_capacity(frame.len());
-        frame.format(&mut buf).unwrap();
-        assert_eq!(buf, vec![0x89, 0x02, 0x01, 0x02]);
-    }
-
-    #[test]
-    fn display() {
-        let f = Frame::message("hi there".into(), OpCode::Data(Data::Text), true);
-        let view = format!("{}", f);
-        assert!(view.contains("payload:"));
     }
 }
