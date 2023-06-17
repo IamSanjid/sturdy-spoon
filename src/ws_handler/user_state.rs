@@ -242,15 +242,11 @@ async fn user_handle(
             return;
         };
 
-    let _ = broadcast_tx.send(
-        WebSocketMessage::Text(
-            StringPacket::new("joined")
-                .arg(name.clone())
-                .arg(id.to_string())
-                .into(),
-        )
-        .into_server_shared_bytes(),
-    );
+    let msg: WebSocketMessage = StringPacket::new("joined")
+        .arg(name.clone())
+        .arg(id.to_string())
+        .into();
+    let _ = broadcast_tx.send(msg.into_server_shared_bytes());
 
     if local_data.is_new_owner {
         let expired_time = get_elapsed_milis() + EXPIRATION;
@@ -258,12 +254,12 @@ async fn user_handle(
         let Ok(auth_str) = encode(&Header::default(), &auth, &ws_state.keys.encoding) else {
             return;
         };
-        let _ = dm_tx.send(WebSocketMessage::Text(
+        let _ = dm_tx.send(
             StringPacket::new("auth")
                 .arg(auth_str)
                 .arg(expired_time.to_string())
                 .into(),
-        ));
+        );
     }
 
     let r_data = data.read().await;
@@ -271,7 +267,7 @@ async fn user_handle(
         r_data.deref(),
         local_data.permission.into(),
     ));
-    let _ = dm_tx.send(WebSocketMessage::Text(data_str.into()));
+    let _ = dm_tx.send(data_str.into());
     drop(r_data);
 
     // get the notified future before starting the tasks..
@@ -358,15 +354,12 @@ async fn user_handle(
         let _ = ws_state.close_room(current_room_id).await;
     } else {
         ws_state.rooms.read(&current_room_id, |_, v| {
-            v.broadcast_tx.send(
-                WebSocketMessage::Text(
-                    StringPacket::new("left")
-                        .arg(name)
-                        .arg(id.to_string())
-                        .into(),
-                )
-                .into_server_shared_bytes(),
-            )
+            let msg: WebSocketMessage = StringPacket::new("left")
+                .arg(name)
+                .arg(id.to_string())
+                .into();
+
+            v.broadcast_tx.send(msg.into_server_shared_bytes())
         });
     }
 
