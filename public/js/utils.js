@@ -40,7 +40,7 @@ function formToJson(form) {
 function base64Encode(str) {
     return btoa(encodeURIComponent(str));
 }
-  
+
 function base64Decode(str) {
     return decodeURIComponent(atob(str));
 }
@@ -93,7 +93,7 @@ function makeWsClient(client) {
 }
 
 function makeVideoPlayer(videoElement) {
-    const videoObj = { 
+    const videoObj = {
         inner: videoElement,
     };
 

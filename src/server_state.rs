@@ -4,6 +4,8 @@ use axum::extract::FromRef;
 
 use crate::ws_handler::ws_state::WsState;
 
+pub const PUBLIC_DIR: &str = "public";
+
 #[derive(Hash, PartialEq, Eq)]
 pub enum WebPageFileType {
     Static,
@@ -20,13 +22,13 @@ pub struct ServerState {
 impl ServerState {
     pub fn new() -> Self {
         let statics_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("web_pages")
+            .join(PUBLIC_DIR)
             .join("statics");
         let dyn_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("web_pages")
+            .join(PUBLIC_DIR)
             .join("dynamic");
         let js_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("web_pages")
+            .join(PUBLIC_DIR)
             .join("js");
         let web_dirs = Box::leak(Box::new(HashMap::from_iter([
             (WebPageFileType::Static, statics_dir),

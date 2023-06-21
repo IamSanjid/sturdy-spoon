@@ -48,6 +48,7 @@ let waitingForUser = {
 };
 
 let currentCC = null;
+let hackedJWNextButton = null;
 
 let authOpt = localStorage.getItem("local.auth");
 if (authOpt !== null) {
@@ -194,6 +195,10 @@ const updatePlayerState = function (time, state) {
     }
 }
 
+const seekForward10s = () => {
+    globalThis.player.seek(globalThis.player.getPosition() + 10);
+};
+
 const updateVideoPlayerControls = function (permission) {
     if (waitingForUser.currentPlayer !== PLAYER_JW || typeof globalThis.player === "undefined") {
         return;
@@ -210,7 +215,6 @@ const updateVideoPlayerControls = function (permission) {
     const bigPlayButton = document.getElementsByClassName('jw-display-icon-container jw-display-icon-display jw-reset');
     const startPlayButton = document.getElementsByClassName('jw-icon jw-icon-display jw-button-color jw-reset');
     const nextButton = document.querySelector('.jw-display-icon-next');
-    const nextButtonIcon = nextButton.querySelector('.jw-icon-next');
 
     let permissionStyle = "";
 
@@ -219,15 +223,16 @@ const updateVideoPlayerControls = function (permission) {
         globalThis.player.removeButton(forwardButtonName);
         permissionStyle = "display: None";
     } else {
-        const seekForward10s = () => {
-            globalThis.player.seek(globalThis.player.getPosition() + 10);
-        };
         globalThis.player.addButton(forwardButton, forwardButtonTooltip, seekForward10s, forwardButtonName);
-        
-        nextButtonIcon.setAttribute('aria-label', 'Forward 10 Seconds')
-        nextButtonIcon.innerHTML =
-            '<svg xmlns="http://www.w3.org/2000/svg" class="jw-svg-icon" viewBox="0 0 240 240" focusable="false"><path d="m 25.993957,57.778 v 125.3 c 0.03604,2.63589 2.164107,4.76396 4.8,4.8 h 62.7 v -19.3 h -48.2 v -96.4 H 160.99396 v 19.3 c 0,5.3 3.6,7.2 8,4.3 l 41.8,-27.9 c 2.93574,-1.480087 4.13843,-5.04363 2.7,-8 -0.57502,-1.174985 -1.52502,-2.124979 -2.7,-2.7 l -41.8,-27.9 c -4.4,-2.9 -8,-1 -8,4.3 v 19.3 H 30.893957 c -2.689569,0.03972 -4.860275,2.210431 -4.9,4.9 z m 163.422413,73.04577 c -3.72072,-6.30626 -10.38421,-10.29683 -17.7,-10.6 -7.31579,0.30317 -13.97928,4.29374 -17.7,10.6 -8.60009,14.23525 -8.60009,32.06475 0,46.3 3.72072,6.30626 10.38421,10.29683 17.7,10.6 7.31579,-0.30317 13.97928,-4.29374 17.7,-10.6 8.60009,-14.23525 8.60009,-32.06475 0,-46.3 z m -17.7,47.2 c -7.8,0 -14.4,-11 -14.4,-24.1 0,-13.1 6.6,-24.1 14.4,-24.1 7.8,0 14.4,11 14.4,24.1 0,13.1 -6.5,24.1 -14.4,24.1 z m -47.77056,9.72863 v -51 l -4.8,4.8 -6.8,-6.8 13,-12.99999 c 3.02543,-3.03598 8.21053,-0.88605 8.2,3.4 v 62.69999 z"></path></svg>'
-        nextButton.onclick = seekForward10s;
+
+        if (!hackedJWNextButton && nextButton !== null) {
+            const nextButtonIcon = nextButton.querySelector('.jw-icon-next');
+            nextButtonIcon.setAttribute('aria-label', forwardButtonTooltip);
+            nextButtonIcon.innerHTML =
+                '<svg xmlns="http://www.w3.org/2000/svg" class="jw-svg-icon" viewBox="0 0 240 240" focusable="false"><path d="m 25.993957,57.778 v 125.3 c 0.03604,2.63589 2.164107,4.76396 4.8,4.8 h 62.7 v -19.3 h -48.2 v -96.4 H 160.99396 v 19.3 c 0,5.3 3.6,7.2 8,4.3 l 41.8,-27.9 c 2.93574,-1.480087 4.13843,-5.04363 2.7,-8 -0.57502,-1.174985 -1.52502,-2.124979 -2.7,-2.7 l -41.8,-27.9 c -4.4,-2.9 -8,-1 -8,4.3 v 19.3 H 30.893957 c -2.689569,0.03972 -4.860275,2.210431 -4.9,4.9 z m 163.422413,73.04577 c -3.72072,-6.30626 -10.38421,-10.29683 -17.7,-10.6 -7.31579,0.30317 -13.97928,4.29374 -17.7,10.6 -8.60009,14.23525 -8.60009,32.06475 0,46.3 3.72072,6.30626 10.38421,10.29683 17.7,10.6 7.31579,-0.30317 13.97928,-4.29374 17.7,-10.6 8.60009,-14.23525 8.60009,-32.06475 0,-46.3 z m -17.7,47.2 c -7.8,0 -14.4,-11 -14.4,-24.1 0,-13.1 6.6,-24.1 14.4,-24.1 7.8,0 14.4,11 14.4,24.1 0,13.1 -6.5,24.1 -14.4,24.1 z m -47.77056,9.72863 v -51 l -4.8,4.8 -6.8,-6.8 13,-12.99999 c 3.02543,-3.03598 8.21053,-0.88605 8.2,3.4 v 62.69999 z"></path></svg>';
+            nextButton.onclick = seekForward10s;
+            hackedJWNextButton = true;
+        }
     }
 
     if (slider.length > 0) {
@@ -245,7 +250,10 @@ const updateVideoPlayerControls = function (permission) {
     if (startPlayButton.length > 0) {
         startPlayButton[0].style = permissionStyle;
     }
-    nextButton.style = permissionStyle;
+
+    if (nextButton !== null) {
+        nextButton.style = permissionStyle;
+    }
 
     waitingForUser["permission"] = permission;
 }
@@ -266,7 +274,7 @@ const initializePlayerEvents = function (player) {
         if (video_data_state === STATE_PLAY) {
             forcePlayerAction("play");
         }
-        
+
         if (waitingForUser["cc_url"] !== video_data.cc_url) {
             addCurrentCC(video_data.cc_url, "Current CC");
             waitingForUser["cc_url"] = video_data.cc_url;
@@ -447,12 +455,12 @@ const addCurrentCC = function (url, fileName) {
         if (currentCC !== null) {
             normalPlayer.removeChild(currentCC);
         }
-        
+
         currentCC = document.createElement("track");
         currentCC.kind = "captions";
         currentCC.label = fileName;
-        currentCC.src = url; 
-        currentCC.addEventListener("load", function() {
+        currentCC.src = url;
+        currentCC.addEventListener("load", function () {
             this.mode = "showing";
             for (track of normalPlayer.textTracks) {
                 if (track === currentCC) {
@@ -524,7 +532,7 @@ addSubBtn.onclick = () => {
         alert("No file selected!");
         return;
     }
-    
+
     const file = ccFileSelect.files[0];
     //const fileName = file.name.split('.').slice(0, -1).join('.');
     const tmppath = URL.createObjectURL(file);
