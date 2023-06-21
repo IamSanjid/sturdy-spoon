@@ -498,8 +498,15 @@ impl WebSocketContext {
         {
             Err(Error::ConnectionClosed) => return Err(Error::ConnectionClosed),
             Err(Error::AlreadyClosed) => return Err(Error::AlreadyClosed),
-            // If no pending pong message has been written to the stream, there is no need to flush the writes.
-            Err(e) if !should_flash => return Err(e),
+            Err(e) => {
+                // If a pending pong message has been written to the stream, we try to flush the
+                // stream writes despite failing to write the provided buffer and also return
+                // the previous error.
+                if should_flash {
+                    let _ = self.flush(stream);
+                }
+                return Err(e);
+            }
             _ => {}
         }
 

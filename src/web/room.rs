@@ -146,7 +146,8 @@ async fn join_direct(
     {
         Ok(file) => file,
         Err(err) => {
-            return Err((StatusCode::BAD_REQUEST, format!("Error: {}", err)).into_response())
+            println!("room-min.html: {}", err);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Unexpectedly some web page caused an error.").into_response())
         }
     };
 
