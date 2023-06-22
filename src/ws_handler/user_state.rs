@@ -363,6 +363,7 @@ async fn user_handle(
         });
     }
 
+    ws_state.users.remove_async(&id).await;
     println!("{} - {} left!", who, id);
 }
 
