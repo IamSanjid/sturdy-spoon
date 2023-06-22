@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::str::FromStr;
 
 use axum::extract::Path;
@@ -26,7 +27,7 @@ use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
 use crate::ws_handler::PLAYER_MAX;
 
-const URL_SAFE_ENGINE: engine::GeneralPurpose =
+const URL_SAFE_B64: engine::GeneralPurpose =
     engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD);
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +42,7 @@ struct CreateRoomPayload {
 
 #[derive(Serialize)]
 struct Room {
-    id: Uuid,
+    id: String,
     ws_path: String,
 }
 
@@ -57,7 +58,6 @@ struct JoinUser {
     ws_path: String,
 }
 
-// TODO: /room/:id = auto join to the spcific id!
 pub(super) fn routes(server_state: ServerState) -> Router {
     Router::new()
         .route("/create", post(create))
@@ -67,21 +67,22 @@ pub(super) fn routes(server_state: ServerState) -> Router {
 }
 
 fn parse_uuid_from_base64(id: String) -> Result<Uuid, impl IntoResponse> {
-    // URL_SAFE_ENGINE
-    //     .decode(id)
-    //     .as_deref()
-    //     .map_err(|err| (StatusCode::BAD_REQUEST, format!("Error: {}", err)))
-    //     .and_then(|v| std::str::from_utf8(v).map_err(|err| (StatusCode::BAD_REQUEST, format!("Error: {}", err))))
-    //     .and_then(|v| Uuid::from_str(v).map_err(|err| (StatusCode::BAD_REQUEST, format!("Error: {}", err))))
-    match URL_SAFE_ENGINE.decode(id).as_deref() {
-        Ok(vec) => match std::str::from_utf8(vec) {
-            Ok(id) => match Uuid::from_str(id) {
-                Ok(id) => return Ok(id),
-                Err(err) => return Err((StatusCode::BAD_REQUEST, format!("Error: {}", err))),
-            },
-            Err(err) => return Err((StatusCode::BAD_REQUEST, format!("Error: {}", err))),
-        },
-        Err(err) => return Err((StatusCode::BAD_REQUEST, format!("Error: {}", err))),
+    fn format_error<T: Display>(error: T) -> String {
+        format!("Error: {}", error)
+    }
+    let decode_res = URL_SAFE_B64
+        .decode(id)
+        .as_deref()
+        .map_err(format_error)
+        .and_then(|id_bytes| std::str::from_utf8(id_bytes).map_err(format_error))
+        .and_then(|id_str| Uuid::from_str(id_str).map_err(format_error));
+
+    match decode_res {
+        Err(e) => {
+            println!("[[Parse Id B64 Error]] {}", e);
+            return Err((StatusCode::BAD_REQUEST, "Bad Uuid was provided."));
+        }
+        Ok(ok) => Ok(ok),
     }
 }
 
@@ -113,6 +114,7 @@ async fn create(
         .await
         .map_err(|err| err.into_response())?;
 
+    let id = URL_SAFE_B64.encode(id.to_string());
     Ok(Json(Room { id, ws_path }))
 }
 
@@ -147,7 +149,11 @@ async fn join_direct(
         Ok(file) => file,
         Err(err) => {
             println!("room-min.html: {}", err);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Unexpectedly some web page caused an error.").into_response())
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unexpectedly some required web page caused an error.",
+            )
+                .into_response());
         }
     };
 

@@ -1,9 +1,10 @@
 <html>
 
 <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         @media only screen and (width<435px) {
-            div[class='jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-forward'] {
+            div[button='jw-forward'] {
                 display: none;
             }
         }
@@ -35,6 +36,7 @@
             <button id="addSubBtn">Add Sub</button>
         </div>
     </div>
+    <script src="../js/thirdparty/jwplayer.js"></script>
     <script src="../js/utils.js"></script>
     <script>
         let room_data = null;
@@ -42,7 +44,6 @@
             window.location.assign(getPathUrl("room.html"));
         }
     </script>
-    <script src="../js/thirdparty/jwplayer.js"></script>
     <script src="../js/str_packet.js"></script>
     <script src="../js/room.js"></script>
 </body>
