@@ -45,15 +45,21 @@ function base64Decode(str) {
     return decodeURIComponent(atob(str));
 }
 
-function getWsUrl(ws) {
+function getWsUrl(ws, default_base = "") {
     const isSecured = window.location.href.includes("https");
-    const mainUrl = (isSecured ? "wss://" : "ws://") + window.location.host + "/";
+    if (default_base.length === 0) {
+        default_base = window.location.host;
+    }
+    const mainUrl = (isSecured ? "wss://" : "ws://") + default_base + "/";
     return mainUrl + ws;
 }
 
-function getPathUrl(path = "") {
+function getPathUrl(path = "", default_base = "") {
     const isSecured = window.location.href.includes("https");
-    const mainUrl = (isSecured ? "https://" : "http://") + window.location.host + "/";
+    if (default_base.length === 0) {
+        default_base = window.location.host;
+    }
+    const mainUrl = (isSecured ? "https://" : "http://") + default_base + "/";
     return mainUrl + path;
 }
 

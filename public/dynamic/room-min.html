@@ -1,5 +1,14 @@
 <html>
 
+<head>
+    <style>
+        @media only screen and (width<435px) {
+            div[class='jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-forward'] {
+                display: none;
+            }
+        }
+    </style>
+</head>
 <body>
     <div id="info-collect">
         <p>Joining room <b><span id="room-name" style="color: darkorange;"></span></b></p>
@@ -18,8 +27,12 @@
                 "Your browser doesn't support HTML5 video"
             </video>
         </div>
-        <input id="ccFileSelect" type="file" /><br>
-        <button id="addSubBtn">Add Sub</button>
+        <br>
+        <br>
+        <div>
+            <input id="ccFileSelect" type="file" /><br>
+            <button id="addSubBtn">Add Sub</button>
+        </div>
     </div>
     <script src="../js/utils.js"></script>
     <script>
