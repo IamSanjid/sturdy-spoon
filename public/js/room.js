@@ -22,6 +22,7 @@ const mainView = document.getElementById("main-view");
 const jwplayerView = document.getElementById("jwplayer-view");
 const normalPlayerView = document.getElementById("normal-player-view");
 const normalPlayer = document.getElementById("normal-player");
+const ccFileSelectView = document.getElementById("cc-file-select-view");
 
 const infoCollect = document.getElementById("info-collect");
 const roomNameLabel = document.getElementById("room-name");
@@ -29,7 +30,6 @@ const joinRoomForm = document.getElementById("room-join-form");
 const nameEl = document.getElementById("name");
 
 const ccFileSelect = document.getElementById("ccFileSelect");
-const addSubBtn = document.getElementById("addSubBtn");
 
 const PLAYER_STATES = {
     "playing": STATE_PLAY,
@@ -48,7 +48,6 @@ let waitingForUser = {
 };
 
 let currentCC = null;
-let hackedJWNextButton = null;
 
 let authOpt = localStorage.getItem("local.auth");
 if (authOpt !== null) {
@@ -199,15 +198,19 @@ const seekForward10s = () => {
     globalThis.player.seek(globalThis.player.getPosition() + 10);
 };
 
+let hackedJWNextButton = false;
 const updateVideoPlayerControls = function (permission) {
     if (waitingForUser.currentPlayer !== PLAYER_JW || typeof globalThis.player === "undefined") {
         return;
     }
 
+    const selectCCButton = '<svg xmlns="http://www.w3.org/2000/svg" class="jw-svg-icon jw-svg-icon-rewind2" viewBox="0 0 490.955 490.955" focusable="false"><path d="M445.767,308.42l-53.374-76.49v-20.656v-11.366V97.241c0-6.669-2.604-12.94-7.318-17.645L312.787,7.301  C308.073,2.588,301.796,0,295.149,0H77.597C54.161,0,35.103,19.066,35.103,42.494V425.68c0,23.427,19.059,42.494,42.494,42.494  h159.307h39.714c1.902,2.54,3.915,5,6.232,7.205c10.033,9.593,23.547,15.576,38.501,15.576c26.935,0-1.247,0,34.363,0  c14.936,0,28.483-5.982,38.517-15.576c11.693-11.159,17.348-25.825,17.348-40.29v-40.06c16.216-3.418,30.114-13.866,37.91-28.811  C459.151,347.704,457.731,325.554,445.767,308.42z M170.095,414.872H87.422V53.302h175.681v46.752  c0,16.655,13.547,30.209,30.209,30.209h46.76v66.377h-0.255v0.039c-17.685-0.415-35.529,7.285-46.934,23.46l-61.586,88.28  c-11.965,17.134-13.387,39.284-3.722,57.799c7.795,14.945,21.692,25.393,37.91,28.811v19.842h-10.29H170.095z M410.316,345.771  c-2.03,3.866-5.99,6.271-10.337,6.271h-0.016h-32.575v83.048c0,6.437-5.239,11.662-11.659,11.662h-0.017H321.35h-0.017  c-6.423,0-11.662-5.225-11.662-11.662v-83.048h-32.574h-0.016c-4.346,0-8.308-2.405-10.336-6.271  c-2.012-3.866-1.725-8.49,0.783-12.07l61.424-88.064c2.189-3.123,5.769-4.984,9.57-4.984h0.017c3.802,0,7.38,1.861,9.568,4.984  l61.427,88.064C412.04,337.28,412.328,341.905,410.316,345.771z"></path></svg>';
+    const selectCCButtonTooltip = 'Select local Subtitle/CC file..';
+    const selectCCButtonName = 'jw-select-cc';
+
     const forwardButton = '<svg xmlns="http://www.w3.org/2000/svg" class="jw-svg-icon jw-svg-icon-rewind2" viewBox="0 0 240 240" focusable="false"><path d="m 25.993957,57.778 v 125.3 c 0.03604,2.63589 2.164107,4.76396 4.8,4.8 h 62.7 v -19.3 h -48.2 v -96.4 H 160.99396 v 19.3 c 0,5.3 3.6,7.2 8,4.3 l 41.8,-27.9 c 2.93574,-1.480087 4.13843,-5.04363 2.7,-8 -0.57502,-1.174985 -1.52502,-2.124979 -2.7,-2.7 l -41.8,-27.9 c -4.4,-2.9 -8,-1 -8,4.3 v 19.3 H 30.893957 c -2.689569,0.03972 -4.860275,2.210431 -4.9,4.9 z m 163.422413,73.04577 c -3.72072,-6.30626 -10.38421,-10.29683 -17.7,-10.6 -7.31579,0.30317 -13.97928,4.29374 -17.7,10.6 -8.60009,14.23525 -8.60009,32.06475 0,46.3 3.72072,6.30626 10.38421,10.29683 17.7,10.6 7.31579,-0.30317 13.97928,-4.29374 17.7,-10.6 8.60009,-14.23525 8.60009,-32.06475 0,-46.3 z m -17.7,47.2 c -7.8,0 -14.4,-11 -14.4,-24.1 0,-13.1 6.6,-24.1 14.4,-24.1 7.8,0 14.4,11 14.4,24.1 0,13.1 -6.5,24.1 -14.4,24.1 z m -47.77056,9.72863 v -51 l -4.8,4.8 -6.8,-6.8 13,-12.99999 c 3.02543,-3.03598 8.21053,-0.88605 8.2,3.4 v 62.69999 z"></path></svg>';
     const forwardButtonTooltip = 'Forward 10 Seconds';
     const forwardButtonName = 'jw-forward';
-    const forwardButtonClassName = 'jw-icon-forward';
 
     const slider = document.getElementsByClassName('jw-slider-time jw-background-color jw-reset jw-slider-horizontal jw-reset');
     const playback = document.getElementsByClassName('jw-icon jw-icon-inline jw-button-color jw-reset jw-icon-playback');
@@ -220,11 +223,17 @@ const updateVideoPlayerControls = function (permission) {
     let permissionStyle = "";
 
     const controllable = hasBit(permission, PERMISSION_CONTROLLABLE);
+
+    globalThis.player.removeButton(forwardButtonName);
+    globalThis.player.removeButton(selectCCButtonName);
+    globalThis.player.addButton(selectCCButton, selectCCButtonTooltip, () => {
+        ccFileSelect.click();
+    }, selectCCButtonName);
+
     if (!controllable) {
-        globalThis.player.removeButton(forwardButtonName);
         permissionStyle = "display: None";
     } else {
-        globalThis.player.addButton(forwardButton, forwardButtonTooltip, seekForward10s, forwardButtonName, forwardButtonClassName);
+        globalThis.player.addButton(forwardButton, forwardButtonTooltip, seekForward10s, forwardButtonName);
 
         if (!hackedJWNextButton && nextButton !== null) {
             const nextButtonIcon = nextButton.querySelector('.jw-icon-next');
@@ -357,8 +366,10 @@ const setupVideoPlayer = function (index, url, autostart = false) {
         case PLAYER_JW:
             jwplayerView.style = "";
             normalPlayerView.style = "display: none;";
+            ccFileSelectView.style = "display: none;";
             return setupJwVideoPlayer(url, autostart);
         case PLAYER_NORMAL:
+            ccFileSelectView.style = "";
             normalPlayerView.style = "";
             jwplayerView.style = "display: none;";
             return setupNormalVideoPlayer(url);
@@ -485,6 +496,21 @@ const addCurrentCC = function (url, fileName) {
     }, 250);
 }
 
+const addLocalCC = function() {
+    if (typeof globalThis.player === "undefined") {
+        return;
+    }
+    if (typeof ccFileSelect.files === "undefined" || ccFileSelect.files.length <= 0) {
+        alert("No file selected!");
+        return;
+    }
+
+    const file = ccFileSelect.files[0];
+    //const fileName = file.name.split('.').slice(0, -1).join('.');
+    const tmppath = URL.createObjectURL(file);
+    addCurrentCC(tmppath, "Current CC");
+}
+
 function connectToServer() {
     if (typeof room_data.ws_path === "undefined") {
         return;
@@ -525,22 +551,11 @@ function connectToServer() {
     globalThis.ws_client = makeWsClient(client);
 }
 
-addSubBtn.onclick = () => {
-    if (typeof globalThis.player === "undefined") {
-        return;
-    }
-    if (typeof ccFileSelect.files === "undefined" || ccFileSelect.files.length <= 0) {
-        alert("No file selected!");
-        return;
-    }
-
-    const file = ccFileSelect.files[0];
-    //const fileName = file.name.split('.').slice(0, -1).join('.');
-    const tmppath = URL.createObjectURL(file);
-    addCurrentCC(tmppath, "Current CC");
-}
-
 joinRoomForm.onsubmit = (e) => {
     e.preventDefault();
     connectToServer();
+};
+
+ccFileSelect.onchange = (_) => {
+    addLocalCC();
 };

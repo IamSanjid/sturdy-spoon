@@ -3,7 +3,7 @@
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        @media only screen and (width<435px) {
+        @media only screen and (width<436px) {
             div[button='jw-forward'] {
                 display: none;
             }
@@ -29,11 +29,9 @@
                 "Your browser doesn't support HTML5 video"
             </video>
         </div>
-        <br>
-        <br>
-        <div>
-            <input id="ccFileSelect" type="file" /><br>
-            <button id="addSubBtn">Add Sub</button>
+        <div style="display: none;" id="cc-file-select-view">
+            <label for="ccFileSelect">Choose local Subtitle/CC file...</label>
+            <input id="ccFileSelect" type="file"/>
         </div>
     </div>
     <script src="../js/thirdparty/jwplayer.js"></script>
