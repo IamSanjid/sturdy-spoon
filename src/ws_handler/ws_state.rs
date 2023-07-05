@@ -9,8 +9,7 @@ use internal_server_error::InternalServerError;
 use thiserror::Error;
 
 use crate::basic_auth::Keys;
-use crate::common::ubucket::UBucket;
-use crate::common::Id;
+use crate::common::{Id, HashContainer, get_new_id};
 use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
 use super::room_state::room_handle;
@@ -38,8 +37,8 @@ pub enum WebSocketStateError {
 }
 
 pub struct WsState {
-    pub(super) users: UBucket<UserState>,
-    pub(super) rooms: UBucket<RoomState>,
+    pub(super) users: HashContainer<UserState>,
+    pub(super) rooms: HashContainer<RoomState>,
     pub keys: Keys,
 }
 
@@ -51,8 +50,8 @@ impl Default for WsState {
                 .as_bytes(),
         );
         Self {
-            users: UBucket::with_capacity(20),
-            rooms: UBucket::with_capacity(10),
+            users: HashContainer::with_capacity(20),
+            rooms: HashContainer::with_capacity(10),
             keys,
         }
     }
@@ -68,7 +67,7 @@ impl WsState {
         if max_users > MAX_USERS {
             return Err(WebSocketStateError::MaxUserExceeded);
         }
-        let room_id = self.rooms.get_next_count();
+        let room_id = get_new_id();
         let (broadcast_tx, _broadcast_rx) = broadcast::channel(MAX_USERS);
         let exit_notify = Arc::new(Notify::new());
         let data = Arc::new(RwLock::new(data));
@@ -110,7 +109,7 @@ impl WsState {
         is_owner: bool,
     ) -> Result<LocalUser, WebSocketStateError> {
         // TODO: Seperate socket identifier and user identifier... If we ever imlement DB and stuff.
-        let id = self.users.get_next_count();
+        let id = get_new_id();
         let Some((join_able, data)) = self.rooms.read(&room_id, |_, v| {
             (v.user_join(), v.data.clone())
         }) else {

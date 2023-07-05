@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use axum::extract::ConnectInfo;
 use axum::extract::Path;
@@ -25,8 +26,6 @@ use base64::{
 
 use crate::basic_auth::OwnerAuth;
 use crate::basic_auth::EXPIRATION;
-use crate::common::utils::basic_pad;
-use crate::common::utils::basic_unpad;
 use crate::common::{utils, Id};
 use crate::server_state::ServerState;
 use crate::ws_handler::ws_state::WebSocketStateError;
@@ -74,8 +73,7 @@ pub(super) fn routes(server_state: ServerState) -> Router {
         .with_state(server_state)
 }
 
-/*
-fn parse_uuid_from_base64(id: String) -> Result<Uuid, impl IntoResponse> {
+fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
     fn format_error<T: Display>(error: T) -> String {
         format!("Error: {}", error)
     }
@@ -84,7 +82,7 @@ fn parse_uuid_from_base64(id: String) -> Result<Uuid, impl IntoResponse> {
         .as_deref()
         .map_err(format_error)
         .and_then(|id_bytes| std::str::from_utf8(id_bytes).map_err(format_error))
-        .and_then(|id_str| Uuid::from_str(id_str).map_err(format_error));
+        .and_then(|id_str| Id::from_str(id_str).map_err(format_error));
 
     match decode_res {
         Err(e) => {
@@ -94,8 +92,8 @@ fn parse_uuid_from_base64(id: String) -> Result<Uuid, impl IntoResponse> {
         Ok(ok) => Ok(ok),
     }
 }
-*/
-fn parse_usize_from_base64(id: String) -> Result<usize, impl IntoResponse> {
+
+/*fn parse_usize_from_base64(id: String) -> Result<usize, impl IntoResponse> {
     fn format_error<T: Display>(error: T) -> String {
         format!("Error: {}", error)
     }
@@ -113,7 +111,7 @@ fn parse_usize_from_base64(id: String) -> Result<usize, impl IntoResponse> {
         }
         Ok(ok) => Ok(ok),
     }
-}
+}*/
 
 async fn create(
     user_agent: Option<TypedHeader<headers::UserAgent>>,
@@ -156,7 +154,7 @@ async fn create(
     let expires = utils::get_elapsed_milis() + EXPIRATION;
     let auth = OwnerAuth::new(id, addr.ip(), user_agent, expires).encode(&state.ws_state.keys);
 
-    let id = URL_SAFE_B64.encode(basic_pad(id.to_string(), 8));
+    let id = URL_SAFE_B64.encode(id.to_string());
     Ok(Json(Room { id, ws_path, auth }))
 }
 
@@ -179,7 +177,7 @@ async fn join_direct(
     State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    let id = parse_usize_from_base64(id).map_err(|e| e.into_response())?;
+    let id = parse_uuid_from_base64(id).map_err(|e| e.into_response())?;
     let (room_id, name, ws_path) = state
         .ws_state
         .verify_room(id)

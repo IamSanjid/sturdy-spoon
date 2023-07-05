@@ -155,8 +155,7 @@ async fn verify_join_msg(
                                 println!("OwnerAuth Error: {}", e);
                                 false
                             }
-                        };
-                        true
+                        }
                     } else {
                         false
                     };
