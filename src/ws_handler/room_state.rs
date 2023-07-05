@@ -4,7 +4,8 @@ use std::sync::Arc;
 use tokio;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
-use uuid::Uuid;
+
+use crate::common::Id;
 
 use super::ws_state::WsState;
 use super::VideoData;
@@ -13,9 +14,8 @@ use super::{BMsgSender, CLIENT_TIMEOUT};
 #[derive(Clone)]
 pub struct RoomState {
     #[allow(unused)]
-    pub(super) id: Uuid,
+    pub(super) id: Id,
     pub(super) name: String,
-    pub(super) owner_id: Arc<RwLock<Option<Uuid>>>,
     pub(super) broadcast_tx: BMsgSender,
     pub(super) exit_notify: Arc<Notify>,
     pub(super) data: Arc<RwLock<VideoData>>,
@@ -24,7 +24,7 @@ pub struct RoomState {
 }
 
 impl RoomState {
-    pub(super) fn increase_remaining_users(&self) -> bool {
+    pub(super) fn user_left(&self) -> bool {
         if self.remaining_users.fetch_add(1, Ordering::AcqRel) >= self.max_users - 1 {
             self.remaining_users
                 .store(self.max_users, Ordering::Release);
@@ -33,7 +33,7 @@ impl RoomState {
         return true;
     }
 
-    pub(super) fn decrease_remaining_users(&self) -> bool {
+    pub(super) fn user_join(&self) -> bool {
         if self.remaining_users.fetch_sub(1, Ordering::AcqRel) == 0 {
             self.remaining_users.store(0, Ordering::Release);
             return false;
@@ -54,11 +54,7 @@ impl RoomState {
     }
 }
 
-pub(super) async fn room_handle(
-    room_id: Uuid,
-    exit_notif: Arc<Notify>,
-    ws_state: &'static WsState,
-) {
+pub(super) async fn room_handle(room_id: Id, exit_notif: Arc<Notify>, ws_state: &'static WsState) {
     loop {
         exit_notif.notified().await;
         tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)).await;
@@ -68,5 +64,6 @@ pub(super) async fn room_handle(
         }
     }
 
+    println!("[ROOM UPDATE] Removing room id: {}", room_id);
     ws_state.rooms.remove_async(&room_id).await;
 }

@@ -1,38 +1,25 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use http::StatusCode;
+use tokio::sync::broadcast;
+use tokio::sync::{Notify, RwLock};
+
+use internal_server_error::InternalServerError;
+use thiserror::Error;
+
+use crate::basic_auth::Keys;
+use crate::common::ubucket::UBucket;
+use crate::common::Id;
 use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
 use super::room_state::room_handle;
 use super::user_state::{LocalUser, UserState};
 use super::PERMISSION_ALL;
 use super::{room_state::RoomState, VideoData};
-use http::StatusCode;
-use jsonwebtoken::{DecodingKey, EncodingKey};
-use scc::HashIndex;
-use tokio::sync::broadcast;
-use tokio::sync::{Notify, RwLock};
-use uuid::Uuid;
-
-use internal_server_error::InternalServerError;
-use thiserror::Error;
 
 const MAX_USERS: usize = 100;
 const DEFAULT_WS: &str = "ws";
-
-pub(super) struct Keys {
-    pub encoding: EncodingKey,
-    pub decoding: DecodingKey,
-}
-
-impl Keys {
-    fn new(secret: &[u8]) -> Self {
-        Self {
-            encoding: EncodingKey::from_secret(secret),
-            decoding: DecodingKey::from_secret(secret),
-        }
-    }
-}
 
 #[derive(Debug, Error, InternalServerError)]
 pub enum WebSocketStateError {
@@ -51,9 +38,9 @@ pub enum WebSocketStateError {
 }
 
 pub struct WsState {
-    pub(super) users: HashIndex<Uuid, UserState>,
-    pub(super) rooms: HashIndex<Uuid, RoomState>,
-    pub(super) keys: Keys,
+    pub(super) users: UBucket<UserState>,
+    pub(super) rooms: UBucket<RoomState>,
+    pub keys: Keys,
 }
 
 impl Default for WsState {
@@ -64,8 +51,8 @@ impl Default for WsState {
                 .as_bytes(),
         );
         Self {
-            users: HashIndex::with_capacity(20),
-            rooms: HashIndex::with_capacity(10),
+            users: UBucket::with_capacity(20),
+            rooms: UBucket::with_capacity(10),
             keys,
         }
     }
@@ -77,18 +64,17 @@ impl WsState {
         data: VideoData,
         name: String,
         max_users: usize,
-    ) -> Result<(Uuid, String), WebSocketStateError> {
+    ) -> Result<(Id, String), WebSocketStateError> {
         if max_users > MAX_USERS {
             return Err(WebSocketStateError::MaxUserExceeded);
         }
-        let room_id = Uuid::new_v4();
+        let room_id = self.rooms.get_next_count();
         let (broadcast_tx, _broadcast_rx) = broadcast::channel(MAX_USERS);
         let exit_notify = Arc::new(Notify::new());
         let data = Arc::new(RwLock::new(data));
         let room = RoomState {
             id: room_id,
             name,
-            owner_id: Arc::new(RwLock::new(None)),
             broadcast_tx,
             exit_notify: exit_notify.clone(),
             data: data.clone(),
@@ -105,8 +91,8 @@ impl WsState {
 
     pub async fn verify_room(
         &self,
-        room_id: Uuid,
-    ) -> Result<(Uuid, String, String), WebSocketStateError> {
+        room_id: Id,
+    ) -> Result<(Id, String, String), WebSocketStateError> {
         // TODO: Check DB and get the proper ID? also the WebSocket path can be different than usual due to load balancing?
         let Some((is_full, name)) = self.rooms.read(&room_id, |_, v| (v.is_full(), v.name.clone())) else {
             return Err(WebSocketStateError::NoRoom);
@@ -119,31 +105,20 @@ impl WsState {
 
     pub async fn join_room(
         &self,
-        room_id: Uuid,
+        room_id: Id,
         name: String,
-        pref_id: Option<Uuid>,
+        is_owner: bool,
     ) -> Result<LocalUser, WebSocketStateError> {
-        let id = Uuid::new_v4();
-        let mut is_new_owner = false;
-        // TODO: Seperate socket identifier Id(s) from the actual user Id probably if we ever imlement DB.
-        let Some((is_empty, decreased, data, owner_id)) = self.rooms.read(&room_id, |_, v| {
-            (v.is_empty(), v.decrease_remaining_users(), v.data.clone(), v.owner_id.clone())
+        // TODO: Seperate socket identifier and user identifier... If we ever imlement DB and stuff.
+        let id = self.users.get_next_count();
+        let Some((join_able, data)) = self.rooms.read(&room_id, |_, v| {
+            (v.user_join(), v.data.clone())
         }) else {
             return Err(WebSocketStateError::NoRoom);
         };
-        if !decreased {
+        if !join_able {
             return Err(WebSocketStateError::RoomFull);
         }
-
-        let owner_id_read = owner_id.read().await;
-        let is_owner = if is_empty && owner_id_read.is_none() {
-            drop(owner_id_read);
-            *owner_id.write_owned().await = Some(id);
-            is_new_owner = true;
-            true
-        } else {
-            owner_id_read.is_some_and(|oid| Some(oid) == pref_id)
-        };
 
         let data = data.read().await;
         let permission = if is_owner {
@@ -156,13 +131,13 @@ impl WsState {
             name,
             id,
             room_id,
-            is_new_owner,
+            is_owner,
         };
 
         return Ok(local_user);
     }
 
-    pub fn kick_user(&self, id: Uuid) -> Result<(), WebSocketStateError> {
+    pub fn kick_user(&self, id: Id) -> Result<(), WebSocketStateError> {
         if let None = self.users.read(&id, |_, v| {
             v.tx.send(WebSocketMessage::Close(Some(CloseFrame {
                 code: CloseCode::Protocol,
@@ -175,7 +150,7 @@ impl WsState {
         Ok(())
     }
 
-    pub async fn close_room(&self, room_id: Uuid) -> Result<(), WebSocketStateError> {
+    pub async fn close_room(&self, room_id: Id) -> Result<(), WebSocketStateError> {
         if let None = self.rooms.read(&room_id, |_, v| v.close()) {
             return Err(WebSocketStateError::NoRoom);
         }

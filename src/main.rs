@@ -10,6 +10,7 @@ use http::StatusCode;
 use tokio;
 use tower_http::services::ServeDir;
 
+mod basic_auth;
 mod common;
 mod server_state;
 pub mod sturdy_ws;
@@ -32,8 +33,7 @@ async fn run_server(state: ServerState) {
             ServeDir::new(state.get_static_dir()).append_index_html_on_directories(true),
         )
         .nest_service("/js", ServeDir::new(state.get_js_dir()))
-        .route("/ws", get(ws_handler))
-        .with_state(state.clone())
+        .merge(ws_route(state.clone()))
         .merge(web::routes(state));
 
     let port = std::env::var("PORT").unwrap_or(String::from("8080"));
@@ -44,6 +44,12 @@ async fn run_server(state: ServerState) {
         .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .unwrap();
+}
+
+fn ws_route(state: ServerState) -> Router {
+    Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(state)
 }
 
 async fn ws_handler(
@@ -59,6 +65,6 @@ async fn ws_handler(
     };
     println!("`{user_agent}` at {addr} connected.");
     ws.on_upgrade(move |socket| async move {
-        validate_and_handle_client(server.ws_state, socket, addr).await;
+        validate_and_handle_client(server.ws_state, socket, addr, user_agent).await;
     })
 }

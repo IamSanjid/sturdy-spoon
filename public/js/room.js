@@ -6,6 +6,27 @@ const wasMute = muteOpt !== null && muteOpt === "true";
 if (muteOpt !== null) {
     localStorage.removeItem("jwplayer.mute");
 }
+const jwDefaults = {
+    "aspectratio": "16:9",
+    "autostart": false,
+    "controls": true,
+    "cast": {
+        "appid": "00000000"
+    },
+    "displaydescription": true,
+    "displaytitle": true,
+    "height": 360,
+    "key": "ITWMv7t88JGzI0xPwW8I0+LveiXX9SWbfdmt0ArUSyc=",
+    "mute": false,
+    "ph": 1,
+    "pid": "aVr2lJgW",
+    "playbackRateControls": true,
+    "preload": "none",
+    "repeat": false,
+    "stretching": "uniform",
+    "width": "100%",
+};
+jwplayer.defaults = jwDefaults;
 /* JWPlayer fixes */
 
 const STATE_PAUSE = 0;
@@ -49,18 +70,11 @@ let waitingForUser = {
 
 let currentCC = null;
 
-let authOpt = localStorage.getItem("local.auth");
+let authOpt = localStorage.getItem("local.auth_name");
 if (authOpt !== null) {
-    const [auth_str, expiration_str] = authOpt.split("|.|");
-    const expiration = parseInt(expiration_str);
-    if (Date.now() > expiration) {
-        localStorage.removeItem("local.auth");
-        authOpt = null;
-    } else {
-        authOpt = auth_str;
-        joinRoomForm.style = "display: None;";
-        connectToServer();
-    }
+    joinRoomForm.style = "display: None;";
+    nameEl.value = authOpt;
+    connectToServer();
 }
 
 roomNameLabel.innerText = room_data.name;
@@ -103,8 +117,11 @@ const handleMessage = function (message) {
 
             globalThis.last_video_data = video_data;
             break;
-        case "auth":
-            localStorage.setItem("local.auth", data[0] + "|.|" + data[1]);
+        case "auth_name":
+            localStorage.setItem("local.auth_name", data[0]);
+            break;
+        case "not_owner":
+            localStorage.removeItem("local.owner_auth");
             break;
         case "joined":
             console.log("Somebody joined: ");
@@ -346,6 +363,10 @@ const initializePlayerEvents = function (player) {
             return;
         }
 
+        if (arguments.length > 0 && typeof arguments[0].pauseReason === "undefined") {
+            return;
+        }
+
         globalThis.ws_client.sendText(currentEvt, player.getPosition());
     });
 
@@ -496,7 +517,7 @@ const addCurrentCC = function (url, fileName) {
     }, 250);
 }
 
-const addLocalCC = function() {
+const addLocalCC = function () {
     if (typeof globalThis.player === "undefined") {
         return;
     }
@@ -519,11 +540,10 @@ function connectToServer() {
     const client = new WebSocket(getWsUrl(room_data.ws_path));
     client.onopen = (e) => {
         console.log("ws opened: ", e);
-        let packet;
-        if (authOpt !== null) {
-            packet = new StrPacket("auth_join").addArgs(authOpt);
-        } else {
-            packet = new StrPacket("join_room").addArgs(room_data.room_id, name);
+        const owner_auth = localStorage.getItem("local.owner_auth");
+        let packet = new StrPacket("join_room").addArgs(room_data.room_id, name);
+        if (owner_auth !== null) {
+            packet.addArgs(owner_auth);
         }
         client.send(packet.to_str());
     }

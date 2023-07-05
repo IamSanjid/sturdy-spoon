@@ -1,6 +1,5 @@
-use std::{collections::HashMap, path::PathBuf};
-
 use axum::extract::FromRef;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::ws_handler::ws_state::WsState;
 

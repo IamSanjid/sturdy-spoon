@@ -7,8 +7,8 @@ class StrPacket {
         this.args = "";
     }
 
-    addArgs(...args) {
-        for (const arg of args) {
+    addArgs() {
+        for (const arg of arguments) {
             if (this.args.length === 0) {
                 this.args += arg;
             } else {
