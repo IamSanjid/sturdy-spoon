@@ -122,6 +122,7 @@ const handleMessage = function (message) {
             break;
         case "not_owner":
             localStorage.removeItem("local.owner_auth");
+            localStorage.removeItem("local.auth_name");
             break;
         case "joined":
             console.log("Somebody joined: ");
