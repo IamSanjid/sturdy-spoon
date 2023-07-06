@@ -93,43 +93,47 @@ impl VideoData {
         }
     }
 
-    pub fn with_permission(mut self, permission: usize) -> Self {
-        self.permission = permission.into();
-        self
-    }
-
+    #[inline]
     pub fn get_url(&self) -> String {
         self.url.clone()
     }
 
+    #[inline]
     pub fn update_url(&mut self, url: String) {
         self.url = url;
     }
 
+    #[inline]
     pub fn get_cc_url(&self) -> String {
         self.cc_url.clone()
     }
 
+    #[inline]
     pub fn update_cc_url(&mut self, cc_url: String) {
         self.cc_url = cc_url;
     }
 
+    #[inline]
     pub fn get_state(&self) -> usize {
         self.state
     }
 
-    pub fn set_state(&mut self, state: usize) {
+    #[inline]
+    pub fn set_state(&mut self, time: usize, state: usize) {
         self.state = state;
+        self.time = time;
         self.last_time_updated = get_elapsed_milis();
     }
 
-    pub fn get_time(&self) -> usize {
-        self.time
-    }
-
+    #[inline]
     pub fn set_time(&mut self, time: usize) {
         self.time = time;
         self.last_time_updated = get_elapsed_milis();
+    }
+
+    #[inline]
+    pub fn get_time(&self) -> usize {
+        self.time
     }
 
     pub fn update_time(&mut self) {
@@ -141,26 +145,32 @@ impl VideoData {
         }
     }
 
+    #[inline]
     pub fn get_current_player(&self) -> usize {
         self.current_player
     }
 
+    #[inline]
     pub fn set_current_player(&mut self, current_player: usize) {
         self.current_player = current_player;
     }
 
+    #[inline]
     pub fn get_permission(&self) -> Permission {
         self.permission
     }
 
+    #[inline]
     pub fn has_permission(&self, permission: usize) -> bool {
         self.permission.has_permission(permission)
     }
 
+    #[inline]
     pub fn set_permission(&mut self, permission: usize) {
         self.permission.set_permission(permission);
     }
 
+    #[inline]
     pub fn clear_permission(&mut self, permission: usize) {
         self.permission.clear_permission(permission);
     }

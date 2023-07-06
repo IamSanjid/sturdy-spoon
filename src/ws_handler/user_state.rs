@@ -323,25 +323,27 @@ async fn user_handle(
 }
 
 #[inline(always)]
-async fn check_permission_or_send_current(
-    dm_tx: &WSMsgSender,
-    user: &LocalUser,
-    state_data: &RwLock<VideoData>,
-) -> ControlFlow<Option<String>, bool> {
-    if user.permission.has_permission(PERMISSION_CONTROLLABLE) {
-        return ControlFlow::Continue(true);
+fn check_permission_or_send_current<'a>(
+    dm_tx: &'a WSMsgSender,
+    user: &'a LocalUser,
+    state_data: &'a RwLock<VideoData>,
+) -> impl std::future::Future<Output = ControlFlow<Option<String>, bool>> + 'a {
+    async {
+        if user.permission.has_permission(PERMISSION_CONTROLLABLE) {
+            return ControlFlow::Continue(true);
+        }
+        let data = state_data.read().await;
+        let data_str = StringPacket::new("video_data")
+            .arg(video_data_json(data.deref(), user.permission.into()));
+        if let Err(err) = dm_tx.send(data_str.into()) {
+            return ControlFlow::Break(Some(err.to_string()));
+        };
+        return ControlFlow::Continue(false);
     }
-    let data = state_data.read().await;
-    let data_str =
-        StringPacket::new("video_data").arg(video_data_json(data.deref(), user.permission.into()));
-    if let Err(err) = dm_tx.send(data_str.into()) {
-        return ControlFlow::Break(Some(err.to_string()));
-    };
-    return ControlFlow::Continue(false);
 }
 
 #[inline(always)]
-async fn parse_time(data: &mut impl Iterator<Item = &str>) -> ControlFlow<bool, usize> {
+fn parse_time<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool, usize> {
     let Some(time) = data.next() else {
         return ControlFlow::Break(false);
     };
@@ -356,7 +358,7 @@ async fn parse_time(data: &mut impl Iterator<Item = &str>) -> ControlFlow<bool, 
 }
 
 #[inline(always)]
-async fn parse_state(data: &mut impl Iterator<Item = &str>) -> ControlFlow<bool, usize> {
+fn parse_state<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool, usize> {
     let Some(state) = data.next() else {
         return ControlFlow::Break(false);
     };
@@ -384,12 +386,12 @@ async fn process_message(
             match data_type {
                 "state" => {
                     let mut data = data.split("|.|");
-                    let time = match parse_time(&mut data).await {
+                    let time = match parse_time(&mut data) {
                         ControlFlow::Break(con) => return ControlFlow::Continue(!con),
                         ControlFlow::Continue(time) => time,
                     };
 
-                    let video_state = match parse_state(&mut data).await {
+                    let video_state = match parse_state(&mut data) {
                         ControlFlow::Break(con) => return ControlFlow::Continue(!con),
                         ControlFlow::Continue(state) => state,
                     };
@@ -403,10 +405,11 @@ async fn process_message(
                             .permission
                             .has_permission(PERMISSION_CONTROLLABLE)
                         {
-                            drop(read_state_data);
-                            let mut write_state_data = state_data.write().await;
-                            write_state_data.set_time(time);
-                            write_state_data.set_state(video_state);
+                            {
+                                drop(read_state_data);
+                                let mut state_data = state_data.write().await;
+                                state_data.set_state(time, video_state);
+                            }
 
                             let msg: WebSocketMessage = StringPacket::new("state")
                                 .arg(time.to_string())
@@ -436,14 +439,15 @@ async fn process_message(
                         return ControlFlow::Continue(true);
                     }
 
-                    let time = match parse_time(&mut data.split("|.|")).await {
+                    let time = match parse_time(&mut data.split("|.|")) {
                         ControlFlow::Break(con) => return ControlFlow::Continue(!con),
                         ControlFlow::Continue(time) => time,
                     };
 
-                    let mut state_data = state_data.write().await;
-                    state_data.set_time(time);
-
+                    {
+                        let mut state_data = state_data.write().await;
+                        state_data.set_time(time);
+                    }
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
                     let msg: WebSocketMessage =
@@ -457,14 +461,15 @@ async fn process_message(
                         return ControlFlow::Continue(true);
                     }
 
-                    let time = match parse_time(&mut data.split("|.|")).await {
+                    let time = match parse_time(&mut data.split("|.|")) {
                         ControlFlow::Break(con) => return ControlFlow::Continue(!con),
                         ControlFlow::Continue(time) => time,
                     };
 
-                    let mut state_data = state_data.write().await;
-                    state_data.set_time(time);
-                    state_data.set_state(STATE_PLAY);
+                    {
+                        let mut state_data = state_data.write().await;
+                        state_data.set_state(time, STATE_PLAY);
+                    }
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 
@@ -479,14 +484,15 @@ async fn process_message(
                         return ControlFlow::Continue(true);
                     }
 
-                    let time = match parse_time(&mut data.split("|.|")).await {
+                    let time = match parse_time(&mut data.split("|.|")) {
                         ControlFlow::Break(con) => return ControlFlow::Continue(!con),
                         ControlFlow::Continue(time) => time,
                     };
 
-                    let mut state_data = state_data.write().await;
-                    state_data.set_time(time);
-                    state_data.set_state(STATE_PAUSE);
+                    {
+                        let mut state_data = state_data.write().await;
+                        state_data.set_state(time, STATE_PAUSE);
+                    }
 
                     println!("{}: {} at {}ms", local_data.name, data_type, time);
 

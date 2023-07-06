@@ -73,6 +73,7 @@ pub(super) fn routes(server_state: ServerState) -> Router {
         .with_state(server_state)
 }
 
+#[allow(unused)]
 fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
     fn format_error<T: Display>(error: T) -> String {
         format!("Error: {}", error)
@@ -130,20 +131,16 @@ async fn create(
     if create_room_payload.player_index > PLAYER_MAX {
         return Err((StatusCode::BAD_REQUEST, "Player Index out of bounds.").into_response());
     }
-    let data = if create_room_payload.global_control {
-        VideoData::new(
-            create_room_payload.video_url,
-            create_room_payload.cc_url,
-            create_room_payload.player_index,
-        )
-        .with_permission(PERMISSION_CONTROLLABLE)
-    } else {
-        VideoData::new(
-            create_room_payload.video_url,
-            create_room_payload.cc_url,
-            create_room_payload.player_index,
-        )
-    };
+    let mut data = VideoData::new(
+        create_room_payload.video_url,
+        create_room_payload.cc_url,
+        create_room_payload.player_index,
+    );
+
+    if create_room_payload.global_control {
+        data.set_permission(PERMISSION_CONTROLLABLE)
+    }
+
     let max_users = create_room_payload.max_users.abs() as usize;
     let (id, ws_path) = state
         .ws_state
@@ -154,7 +151,7 @@ async fn create(
     let expires = utils::get_elapsed_milis() + EXPIRATION;
     let auth = OwnerAuth::new(id, addr.ip(), user_agent, expires).encode(&state.ws_state.keys);
 
-    let id = URL_SAFE_B64.encode(id.to_string());
+    let id = id.to_string();
     Ok(Json(Room { id, ws_path, auth }))
 }
 
@@ -177,7 +174,9 @@ async fn join_direct(
     State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    let id = parse_uuid_from_base64(id).map_err(|e| e.into_response())?;
+    // let id = parse_uuid_from_base64(id).map_err(|e| e.into_response())?;
+    let id = Id::from_str(id.as_str())
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Bad Room Id was provided.").into_response())?;
     let (room_id, name, ws_path) = state
         .ws_state
         .verify_room(id)

@@ -9,7 +9,7 @@ use internal_server_error::InternalServerError;
 use thiserror::Error;
 
 use crate::basic_auth::Keys;
-use crate::common::{Id, HashContainer, get_new_id};
+use crate::common::{get_new_id, HashContainer, Id};
 use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
 use super::room_state::room_handle;
