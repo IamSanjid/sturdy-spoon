@@ -4,7 +4,7 @@ pub mod room_state;
 mod user_state;
 pub mod ws_state;
 
-pub use user_state::{validate_and_handle_client, validate_owner_token};
+pub use user_state::validate_and_handle_client;
 
 pub(super) type WSMsgSender =
     tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::WebSocketMessage>;

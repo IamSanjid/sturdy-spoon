@@ -29,6 +29,7 @@ use tower_cookies::Cookies;
 
 use crate::basic_auth::OwnerAuth;
 use crate::basic_auth::EXPIRATION;
+use crate::basic_auth::OWNER_AUTH_CHECKED_COOKIE;
 use crate::basic_auth::OWNER_AUTH_COOKIE;
 use crate::common::{utils, Id};
 use crate::server_state::ServerState;
@@ -162,10 +163,11 @@ async fn create(
     )
     .encode(&state.ws_state.keys);
 
-    let mut owner_aut_cookie = Cookie::new(OWNER_AUTH_COOKIE, auth);
-    owner_aut_cookie
+    let mut owner_auth_cookie = Cookie::new(OWNER_AUTH_COOKIE, auth);
+    owner_auth_cookie
         .set_expires(OffsetDateTime::now_utc() + Duration::milliseconds(EXPIRATION as i64));
-    cookies.add(owner_aut_cookie);
+    owner_auth_cookie.set_http_only(true);
+    cookies.add(owner_auth_cookie);
 
     let id = id.to_string();
     Ok(Json(Room { id, ws_path }))
@@ -186,8 +188,16 @@ async fn join(
 async fn join_direct(
     cookies: Cookies,
     State(state): State<ServerState>,
+    user_agent: Option<TypedHeader<headers::UserAgent>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
+        user_agent.to_string()
+    } else {
+        return Err((StatusCode::FORBIDDEN, "Unknown User agent").into_response());
+    };
+
     let id = Id::from_str(id.as_str())
         .map_err(|_| (StatusCode::BAD_REQUEST, "Bad Room Id was provided.").into_response())?;
     let (room_id, name, ws_path) = state
@@ -208,7 +218,35 @@ async fn join_direct(
         }
     };
 
-    let auto_connect = cookies.get(OWNER_AUTH_COOKIE).is_some();
+    let auth = match cookies.get("owner_auth") {
+        Some(cookie) => match OwnerAuth::from_token(cookie.value(), &state.ws_state.keys) {
+            Err(e) => {
+                println!("OwnerAuth Error: {}", e);
+                None
+            }
+            Ok(auth) => {
+                if !auth.is_valid_room_id(addr.ip(), &user_agent, &room_id) {
+                    None
+                } else {
+                    Some(auth)
+                }
+            }
+        },
+        None => None,
+    };
+
+    let auto_connect = if let Some(auth) = auth {
+        let checked_id = state.ws_state.add_checked_auth(auth).await;
+        let mut checked_auth_cookie =
+            Cookie::new(OWNER_AUTH_CHECKED_COOKIE, checked_id.to_string());
+        checked_auth_cookie.set_expires(OffsetDateTime::now_utc() + Duration::minutes(5));
+        checked_auth_cookie.set_http_only(true);
+        cookies.add(checked_auth_cookie);
+        true
+    } else {
+        cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
+        false
+    };
 
     file = file
         .replace(

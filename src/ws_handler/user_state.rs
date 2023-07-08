@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     basic_auth::OwnerAuth,
-    common::{utils::get_elapsed_milis, Id},
+    common::Id,
     sturdy_ws::{CloseFrame, Message, WebSocket, WebSocketMessage},
     ws_handler::{
         ws_state::WebSocketStateError, CLIENT_TIMEOUT, STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT,
@@ -496,45 +496,21 @@ async fn process_message(
     ControlFlow::Continue(false)
 }
 
-pub fn validate_owner_token(
-    ws_state: &'static WsState,
-    who: &SocketAddr,
-    user_agent: String,
-    owner_token: String,
-) -> Option<LocalUser> {
-    match OwnerAuth::from_token(owner_token, &ws_state.keys) {
-        Ok(owner_auth) => {
-            if get_elapsed_milis() < owner_auth.exp
-                && who.ip() == owner_auth.ip_addr
-                && user_agent == owner_auth.user_agent
-            {
-                let local_user = match ws_state.join_room(
-                    owner_auth.room_id,
-                    owner_auth.username,
-                    PERMISSION_ALL.into(),
-                ) {
-                    Ok(local_user) => local_user,
-                    Err(_) => return None,
-                };
-                return Some(local_user);
-            }
-        }
-        Err(e) => {
-            println!("OwnerAuth Error: {}", e);
-        }
-    }
-
-    return None;
-}
-
 pub async fn validate_and_handle_client(
     ws_state: &'static WsState,
     mut socket: WebSocket,
     who: SocketAddr,
-    owner: Option<LocalUser>,
+    owner: Option<OwnerAuth>,
 ) {
-    let local_user = if let Some(local_user) = owner {
-        local_user
+    let local_user = if let Some(owner_auth) = owner {
+        match ws_state.join_room(
+            owner_auth.room_id,
+            owner_auth.username,
+            PERMISSION_ALL.into(),
+        ) {
+            Ok(local_user) => local_user,
+            Err(_) => return,
+        }
     } else {
         let msg = tokio::select! {
             msg = socket.recv() => {

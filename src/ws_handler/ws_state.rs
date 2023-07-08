@@ -2,13 +2,14 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use http::StatusCode;
+use scc::HashMap;
 use tokio::sync::broadcast;
 use tokio::sync::{Notify, RwLock};
 
 use internal_server_error::InternalServerError;
 use thiserror::Error;
 
-use crate::basic_auth::Keys;
+use crate::basic_auth::{Keys, OwnerAuth};
 use crate::common::{get_new_id, HashContainer, Id};
 use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
@@ -36,11 +37,15 @@ pub enum WebSocketStateError {
     #[error("The spcified user doesn't exist.")]
     #[code(StatusCode::BAD_REQUEST)]
     NoUser,
+    #[error("The spcified owner doesn't exist.")]
+    #[code(StatusCode::BAD_REQUEST)]
+    NoOwner,
 }
 
 pub struct WsState {
     pub(super) users: HashContainer<UserState>,
     pub(super) rooms: HashContainer<RoomState>,
+    pub(super) checked_auth_ids: HashMap<Id, OwnerAuth>,
     pub keys: Keys,
 }
 
@@ -54,6 +59,7 @@ impl Default for WsState {
         Self {
             users: HashContainer::with_capacity(20),
             rooms: HashContainer::with_capacity(10),
+            checked_auth_ids: HashMap::with_capacity(10),
             keys,
         }
     }
@@ -153,5 +159,23 @@ impl WsState {
             return Err(WebSocketStateError::NoRoom);
         }
         Ok(())
+    }
+
+    pub async fn remove_checked_auth<F: FnOnce(&mut OwnerAuth) -> bool>(
+        &self,
+        id: Id,
+        condition: F,
+    ) -> Result<OwnerAuth, WebSocketStateError> {
+        let Some((_, owner_auth)) = self.checked_auth_ids.remove_if_async(&id, condition).await else {
+            return Err(WebSocketStateError::NoOwner);
+        };
+
+        Ok(owner_auth)
+    }
+
+    pub async fn add_checked_auth(&self, owner_auth: OwnerAuth) -> Id {
+        let id = get_new_id();
+        let _ = self.checked_auth_ids.insert_async(id, owner_auth).await;
+        id
     }
 }

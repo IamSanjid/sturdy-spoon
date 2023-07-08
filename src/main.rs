@@ -19,8 +19,9 @@ pub mod sturdy_ws;
 mod web;
 mod ws_handler;
 
-use crate::basic_auth::OWNER_AUTH_COOKIE;
-use crate::ws_handler::{validate_and_handle_client, validate_owner_token};
+use crate::basic_auth::{OWNER_AUTH_CHECKED_COOKIE, OWNER_AUTH_COOKIE};
+use crate::common::Id;
+use crate::ws_handler::validate_and_handle_client;
 use server_state::ServerState;
 use sturdy_ws::WebSocketUpgrade;
 
@@ -72,20 +73,28 @@ async fn ws_handler(
     };
 
     println!("`{user_agent}` at {addr} connected.");
-    println!("Cookies:\n{:?}", cookies.list());
 
-    let owner = match cookies.get("owner_auth") {
-        Some(cookie) => {
-            match validate_owner_token(server.ws_state, &addr, user_agent, cookie.value().into()) {
-                None => {
-                    cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
-                    None
+    let owner = match cookies.get(OWNER_AUTH_CHECKED_COOKIE) {
+        Some(cookie) => match Id::from_str(cookie.value()) {
+            Err(_) => None,
+            Ok(id) => {
+                match server
+                    .ws_state
+                    .remove_checked_auth(id, |v| v.is_valid(addr.ip(), &user_agent))
+                    .await
+                    .ok()
+                {
+                    None => {
+                        cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
+                        None
+                    }
+                    v => v,
                 }
-                local_user => local_user,
             }
-        }
+        },
         None => None,
     };
+    cookies.remove(Cookie::new(OWNER_AUTH_CHECKED_COOKIE, ""));
 
     ws.on_upgrade(move |socket| async move {
         validate_and_handle_client(server.ws_state, socket, addr, owner).await;
