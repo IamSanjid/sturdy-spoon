@@ -14,11 +14,13 @@ use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
 use super::room_state::room_handle;
 use super::user_state::{LocalUser, UserState};
-use super::PERMISSION_ALL;
+use super::Permission;
 use super::{room_state::RoomState, VideoData};
 
+pub type RoomData = Arc<RwLock<VideoData>>;
+
+pub const DEFAULT_WS: &str = "room/ws";
 const MAX_USERS: usize = 100;
-const DEFAULT_WS: &str = "ws";
 
 #[derive(Debug, Error, InternalServerError)]
 pub enum WebSocketStateError {
@@ -88,11 +90,8 @@ impl WsState {
         Ok((room_id, DEFAULT_WS.into()))
     }
 
-    pub async fn verify_room(
-        &self,
-        room_id: Id,
-    ) -> Result<(Id, String, String), WebSocketStateError> {
-        // TODO: Check DB and get the proper ID? also the WebSocket path can be different than usual due to load balancing?
+    pub fn verify_room(&self, room_id: Id) -> Result<(Id, String, String), WebSocketStateError> {
+        // TODO: Check DB and get the proper ID? also the WebSocket path can be different than usual for load balancing stuff?
         let Some((is_full, name)) = self.rooms.read(&room_id, |_, v| (v.is_full(), v.name.clone())) else {
             return Err(WebSocketStateError::NoRoom);
         };
@@ -102,16 +101,16 @@ impl WsState {
         Ok((room_id, name, DEFAULT_WS.into()))
     }
 
-    pub async fn join_room(
+    pub fn join_room(
         &self,
         room_id: Id,
         name: String,
-        is_owner: bool,
+        permission: Permission,
     ) -> Result<LocalUser, WebSocketStateError> {
-        // TODO: Seperate socket identifier and user identifier... If we ever imlement DB and stuff.
+        // TODO: Seperate socket identifier and user identifier... If we ever implement DB and stuff.
         let id = get_new_id();
-        let Some((join_able, data)) = self.rooms.read(&room_id, |_, v| {
-            (v.user_join(), v.data.clone())
+        let Some(join_able) = self.rooms.read(&room_id, |_, v| {
+            v.user_join()
         }) else {
             return Err(WebSocketStateError::NoRoom);
         };
@@ -119,18 +118,11 @@ impl WsState {
             return Err(WebSocketStateError::RoomFull);
         }
 
-        let data = data.read().await;
-        let permission = if is_owner {
-            PERMISSION_ALL.into()
-        } else {
-            data.permission
-        };
         let local_user = LocalUser {
             permission,
             name,
             id,
             room_id,
-            is_owner,
         };
 
         return Ok(local_user);
@@ -149,7 +141,14 @@ impl WsState {
         Ok(())
     }
 
-    pub async fn close_room(&self, room_id: Id) -> Result<(), WebSocketStateError> {
+    pub fn get_room_data(&self, room_id: Id) -> Result<RoomData, WebSocketStateError> {
+        let Some(data) = self.rooms.read(&room_id, |_, v| v.data.clone()) else {
+            return Err(WebSocketStateError::NoRoom);
+        };
+        Ok(data)
+    }
+
+    pub fn close_room(&self, room_id: Id) -> Result<(), WebSocketStateError> {
         if let None = self.rooms.read(&room_id, |_, v| v.close()) {
             return Err(WebSocketStateError::NoRoom);
         }

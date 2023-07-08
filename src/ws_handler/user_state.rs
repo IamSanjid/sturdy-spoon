@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use super::{
     ws_state::WsState, BMsgSender, Permission, VideoData, WSMsgSender, MAX_VIDEO_LEN,
-    PERMISSION_CONTROLLABLE, STATE_MAX,
+    PERMISSION_ALL, PERMISSION_CONTROLLABLE, STATE_MAX,
 };
 use crate::{
     basic_auth::OwnerAuth,
@@ -36,6 +36,16 @@ enum ValidationError {
     InvalidPacket,
 }
 
+impl From<WebSocketStateError> for ValidationError {
+    fn from(err: WebSocketStateError) -> Self {
+        match err {
+            WebSocketStateError::NoRoom => ValidationError::NoRoom,
+            WebSocketStateError::RoomFull => ValidationError::RoomFull,
+            _ => ValidationError::InvalidPacket,
+        }
+    }
+}
+
 #[derive(Clone)]
 #[allow(unused)]
 pub(super) struct UserState {
@@ -48,7 +58,6 @@ pub struct LocalUser {
     pub id: Id,
     pub room_id: Id,
     pub permission: Permission,
-    pub is_owner: bool,
 }
 
 pub struct StringPacket {
@@ -126,7 +135,6 @@ async fn verify_join_msg(
     msg: Message,
     ws_state: &'static WsState,
     who: &SocketAddr,
-    user_agent: String,
 ) -> Result<LocalUser, ValidationError> {
     match msg {
         Message::Text(t) => {
@@ -140,35 +148,15 @@ async fn verify_join_msg(
 
                     let Ok(room_id) = Id::from_str(room_id) else { return Err(ValidationError::InvalidPacket); };
 
-                    let is_owner = if let Some(owner_token) = data.next() {
-                        match OwnerAuth::from_token(owner_token, &ws_state.keys) {
-                            Ok(owner_auth) => {
-                                if get_elapsed_milis() > owner_auth.exp {
-                                    false
-                                } else {
-                                    who.ip() == owner_auth.ip_addr
-                                        && owner_auth.room_id == room_id
-                                        && user_agent == owner_auth.user_agent
-                                }
-                            }
-                            Err(e) => {
-                                println!("OwnerAuth Error: {}", e);
-                                false
-                            }
-                        }
-                    } else {
-                        false
-                    };
-
                     println!("Trying to join room: {}", room_id);
+
+                    let room_data = ws_state
+                        .get_room_data(room_id)
+                        .map_err(ValidationError::from)?;
+                    let room_data = room_data.read().await;
                     return ws_state
-                        .join_room(room_id, name.to_owned(), is_owner)
-                        .await
-                        .map_err(|err| match err {
-                            WebSocketStateError::NoRoom => ValidationError::NoRoom,
-                            WebSocketStateError::RoomFull => ValidationError::RoomFull,
-                            _ => ValidationError::InvalidPacket,
-                        });
+                        .join_room(room_id, name.to_owned(), room_data.permission)
+                        .map_err(ValidationError::from);
                 }
                 _ => return Err(ValidationError::InvalidPacket),
             }
@@ -206,16 +194,6 @@ async fn user_handle(
         .arg(id.to_string())
         .into();
     let _ = broadcast_tx.send(msg.into_server_shared_bytes());
-
-    if local_data.is_owner {
-        let _ = dm_tx.send(
-            StringPacket::new("auth_name")
-                .arg(local_data.name.clone())
-                .into(),
-        );
-    } else {
-        let _ = dm_tx.send(StringPacket::new("not_owner").into());
-    }
 
     let r_data = data.read().await;
     let data_str = StringPacket::new("video_data").arg(video_data_json(
@@ -306,7 +284,7 @@ async fn user_handle(
     };
 
     if !users_remained {
-        let _ = ws_state.close_room(current_room_id).await;
+        let _ = ws_state.close_room(current_room_id);
     } else {
         ws_state.rooms.read(&current_room_id, |_, v| {
             let msg: WebSocketMessage = StringPacket::new("left")
@@ -518,33 +496,68 @@ async fn process_message(
     ControlFlow::Continue(false)
 }
 
+pub fn validate_owner_token(
+    ws_state: &'static WsState,
+    who: &SocketAddr,
+    user_agent: String,
+    owner_token: String,
+) -> Option<LocalUser> {
+    match OwnerAuth::from_token(owner_token, &ws_state.keys) {
+        Ok(owner_auth) => {
+            if get_elapsed_milis() < owner_auth.exp
+                && who.ip() == owner_auth.ip_addr
+                && user_agent == owner_auth.user_agent
+            {
+                let local_user = match ws_state.join_room(
+                    owner_auth.room_id,
+                    owner_auth.username,
+                    PERMISSION_ALL.into(),
+                ) {
+                    Ok(local_user) => local_user,
+                    Err(_) => return None,
+                };
+                return Some(local_user);
+            }
+        }
+        Err(e) => {
+            println!("OwnerAuth Error: {}", e);
+        }
+    }
+
+    return None;
+}
+
 pub async fn validate_and_handle_client(
     ws_state: &'static WsState,
     mut socket: WebSocket,
     who: SocketAddr,
-    user_agent: String,
+    owner: Option<LocalUser>,
 ) {
-    let msg = tokio::select! {
-        msg = socket.recv() => {
-            let Some(Ok(msg)) = msg else {
-                return;
-            };
-            msg
-        },
-        _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => return
-    };
+    let local_user = if let Some(local_user) = owner {
+        local_user
+    } else {
+        let msg = tokio::select! {
+            msg = socket.recv() => {
+                let Some(Ok(msg)) = msg else {
+                    return;
+                };
+                msg
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => return
+        };
 
-    let local_user = match verify_join_msg(msg, ws_state, &who, user_agent).await {
-        Ok(local_user) => local_user,
-        Err(err) => {
-            let _ = socket
-                .send(Message::Close(Some(CloseFrame {
-                    code: crate::sturdy_ws::CloseCode::Error,
-                    reason: std::borrow::Cow::Owned(format!("{}", err)),
-                })))
-                .await;
-            let _ = socket.close().await;
-            return;
+        match verify_join_msg(msg, ws_state, &who).await {
+            Ok(local_user) => local_user,
+            Err(err) => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: crate::sturdy_ws::CloseCode::Error,
+                        reason: std::borrow::Cow::Owned(format!("{}", err)),
+                    })))
+                    .await;
+                let _ = socket.close().await;
+                return;
+            }
         }
     };
 

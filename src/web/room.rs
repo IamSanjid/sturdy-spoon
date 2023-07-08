@@ -1,4 +1,3 @@
-use std::fmt::Display;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
@@ -18,14 +17,19 @@ use http::StatusCode;
 use serde::Deserialize;
 use serde::Serialize;
 
-use base64::{
+/*use base64::{
     alphabet,
     engine::{self, general_purpose},
     Engine as _,
-};
+};*/
+use tower_cookies::cookie::time::Duration;
+use tower_cookies::cookie::time::OffsetDateTime;
+use tower_cookies::Cookie;
+use tower_cookies::Cookies;
 
 use crate::basic_auth::OwnerAuth;
 use crate::basic_auth::EXPIRATION;
+use crate::basic_auth::OWNER_AUTH_COOKIE;
 use crate::common::{utils, Id};
 use crate::server_state::ServerState;
 use crate::ws_handler::ws_state::WebSocketStateError;
@@ -33,12 +37,13 @@ use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
 use crate::ws_handler::PLAYER_MAX;
 
-const URL_SAFE_B64: engine::GeneralPurpose =
-    engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD);
+// const URL_SAFE_B64: engine::GeneralPurpose =
+//     engine::GeneralPurpose::new(&alphabet::URL_SAFE, general_purpose::NO_PAD);
 
 #[derive(Debug, Deserialize)]
 struct CreateRoomPayload {
     name: String,
+    creator_name: String,
     video_url: String,
     cc_url: String,
     max_users: isize,
@@ -50,7 +55,6 @@ struct CreateRoomPayload {
 struct Room {
     id: String,
     ws_path: String,
-    auth: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,13 +77,13 @@ pub(super) fn routes(server_state: ServerState) -> Router {
         .with_state(server_state)
 }
 
-#[allow(unused)]
+/*
 fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
     fn format_error<T: Display>(error: T) -> String {
         format!("Error: {}", error)
     }
     let decode_res = URL_SAFE_B64
-        .decode(id)
+.decode(id)
         .as_deref()
         .map_err(format_error)
         .and_then(|id_bytes| std::str::from_utf8(id_bytes).map_err(format_error))
@@ -93,6 +97,7 @@ fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
         Ok(ok) => Ok(ok),
     }
 }
+*/
 
 /*fn parse_usize_from_base64(id: String) -> Result<usize, impl IntoResponse> {
     fn format_error<T: Display>(error: T) -> String {
@@ -115,6 +120,7 @@ fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
 }*/
 
 async fn create(
+    cookies: Cookies,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<ServerState>,
@@ -125,8 +131,6 @@ async fn create(
     } else {
         return Err((StatusCode::FORBIDDEN, "Unknown User agent").into_response());
     };
-
-    println!("Creator: {}", user_agent);
 
     if create_room_payload.player_index > PLAYER_MAX {
         return Err((StatusCode::BAD_REQUEST, "Player Index out of bounds.").into_response());
@@ -149,20 +153,29 @@ async fn create(
         .map_err(|err| err.into_response())?;
 
     let expires = utils::get_elapsed_milis() + EXPIRATION;
-    let auth = OwnerAuth::new(id, addr.ip(), user_agent, expires).encode(&state.ws_state.keys);
+    let auth = OwnerAuth::new(
+        create_room_payload.creator_name,
+        id,
+        addr.ip(),
+        user_agent,
+        expires,
+    )
+    .encode(&state.ws_state.keys);
+
+    let mut owner_aut_cookie = Cookie::new(OWNER_AUTH_COOKIE, auth);
+    owner_aut_cookie
+        .set_expires(OffsetDateTime::now_utc() + Duration::milliseconds(EXPIRATION as i64));
+    cookies.add(owner_aut_cookie);
 
     let id = id.to_string();
-    Ok(Json(Room { id, ws_path, auth }))
+    Ok(Json(Room { id, ws_path }))
 }
 
 async fn join(
     State(state): State<ServerState>,
     Json(join_room_payload): Json<JoinRoomPayload>,
 ) -> Result<Json<JoinUser>, WebSocketStateError> {
-    let (room_id, name, ws_path) = state
-        .ws_state
-        .verify_room(join_room_payload.room_id)
-        .await?;
+    let (room_id, name, ws_path) = state.ws_state.verify_room(join_room_payload.room_id)?;
     Ok(Json(JoinUser {
         room_id,
         name,
@@ -171,16 +184,15 @@ async fn join(
 }
 
 async fn join_direct(
+    cookies: Cookies,
     State(state): State<ServerState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    // let id = parse_uuid_from_base64(id).map_err(|e| e.into_response())?;
     let id = Id::from_str(id.as_str())
         .map_err(|_| (StatusCode::BAD_REQUEST, "Bad Room Id was provided.").into_response())?;
     let (room_id, name, ws_path) = state
         .ws_state
         .verify_room(id)
-        .await
         .map_err(|e| e.into_response())?;
 
     let mut file = match tokio::fs::read_to_string(state.get_dyn_dir().join("room-min.html")).await
@@ -196,18 +208,25 @@ async fn join_direct(
         }
     };
 
-    file = file.replace(
-        "let room_data = null;",
-        &format!(
-            r#"let room_data = {{
+    let auto_connect = cookies.get(OWNER_AUTH_COOKIE).is_some();
+
+    file = file
+        .replace(
+            "let room_data = null;",
+            &format!(
+                r#"let room_data = {{
                 room_id: '{}',
                 name: '{}',
                 ws_path: '{}'
             }};
             "#,
-            room_id, name, ws_path
-        ),
-    );
+                room_id, name, ws_path
+            ),
+        )
+        .replace(
+            "let autoConnect = false;",
+            &format!("let autoConnect = {};", auto_connect),
+        );
     let header = Response::builder()
         .header(header::CONTENT_TYPE, "text/html")
         .body(file);

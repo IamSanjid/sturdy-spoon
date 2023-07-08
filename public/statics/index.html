@@ -5,20 +5,22 @@
 </head>
 
 <body>
-    <form id="create-room-form" , action="/room/create">
+    <form id="create-room-form" action="/room/create">
         <label for="name">Room Name:</label>
         <input type="text" id="name" name="name" required><br>
+        <label for="creator_name">Creator Name:</label>
+        <input type="text" id="creator_name" name="creator_name" required><br>
         <label for="video_url">Video Url:</label>
-        <!-- <input type="text" id="video_url" name="video_url"
+        <input type="text" id="video_url" name="video_url"
             value="https://www017.vipanicdn.net/streamhls/bc171728a120706ea805ea135d897a79/ep.1.1677675963.m3u8"
-            required><br> -->
-        <input type="text" id="video_url" name="video_url" required><br>
+            required><br>
+        <!-- <input type="text" id="video_url" name="video_url" required><br> -->
         <label for="max_users">Max Users:</label>
         <input type="number" id="max_users" name="max_users" required> <br>
         <input type="checkbox" id="global_control" name="global_control">
         <label for="global_control">Everyone can control video player.</label><br>
         <label for="cc_url">Subtitle(CC) Url:</label>
-        <input type="text" id="cc_url" name="cc_url" value=""><br>
+        <input type="text" id="cc_url" name="cc_url" placeholder="(Optional)" value=""><br>
         <label for="player_index">Choose Player:</label>
         <select id="player_index" data-type="number" name="player_index" size="1">
             <option value="0">JW Player(recommended) .mkv files with unknown audio codec is not supported.</option>
@@ -33,12 +35,10 @@
             e.preventDefault();
             const data = formToJson(createRoomForm);
             const respData = await postAsJson(createRoomForm.action, data);
-            if (typeof respData.id === "undefined" || typeof respData.ws_path === "undefined"
-                || typeof respData.auth === "undefined") {
+            if (typeof respData.id === "undefined" || typeof respData.ws_path === "undefined") {
                 return;
             }
             localStorage.clear(); // new room new world!
-            localStorage.setItem("local.owner_auth", respData.auth);
             console.log(respData.id);
             window.location.assign(getPathUrl("room/" + respData.id));
         }

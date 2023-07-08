@@ -20,12 +20,14 @@ impl Keys {
 }
 
 pub const EXPIRATION: u128 = 2 * 3600 * 1000; // 2 hours
+pub const OWNER_AUTH_COOKIE: &str = "owner_auth";
 
 const SUB: &str = "sturdy@spoon.com";
 const COMPANY: &str = "STURDY_SPOON";
 
 #[derive(Serialize, Deserialize)]
 pub struct OwnerAuth {
+    pub username: String,
     pub room_id: Id,
     pub ip_addr: IpAddr,
     pub user_agent: String,
@@ -35,8 +37,15 @@ pub struct OwnerAuth {
 }
 
 impl OwnerAuth {
-    pub fn new(room_id: Id, ip_addr: IpAddr, user_agent: String, exp: u128) -> Self {
+    pub fn new(
+        username: String,
+        room_id: Id,
+        ip_addr: IpAddr,
+        user_agent: String,
+        exp: u128,
+    ) -> Self {
         Self {
+            username,
             room_id,
             ip_addr,
             user_agent,

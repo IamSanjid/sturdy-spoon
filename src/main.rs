@@ -8,7 +8,9 @@ use axum::{
 
 use http::StatusCode;
 use tokio;
+use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tower_http::services::ServeDir;
+use ws_handler::ws_state::DEFAULT_WS;
 
 mod basic_auth;
 mod common;
@@ -17,7 +19,8 @@ pub mod sturdy_ws;
 mod web;
 mod ws_handler;
 
-use crate::ws_handler::validate_and_handle_client;
+use crate::basic_auth::OWNER_AUTH_COOKIE;
+use crate::ws_handler::{validate_and_handle_client, validate_owner_token};
 use server_state::ServerState;
 use sturdy_ws::WebSocketUpgrade;
 
@@ -34,7 +37,8 @@ async fn run_server(state: ServerState) {
         )
         .nest_service("/js", ServeDir::new(state.get_js_dir()))
         .merge(ws_route(state.clone()))
-        .merge(web::routes(state));
+        .merge(web::routes(state))
+        .layer(CookieManagerLayer::new());
 
     let port = std::env::var("PORT").unwrap_or(String::from("8080"));
     let addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
@@ -47,12 +51,15 @@ async fn run_server(state: ServerState) {
 }
 
 fn ws_route(state: ServerState) -> Router {
+    let ws_path: &str = &format!("/{}", DEFAULT_WS);
     Router::new()
-        .route("/ws", get(ws_handler))
+        .route(ws_path, get(ws_handler))
         .with_state(state)
 }
 
+// TODO: Move this logic into `ws_handler` or something else?
 async fn ws_handler(
+    cookies: Cookies,
     ws: WebSocketUpgrade,
     State(server): State<ServerState>,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
@@ -63,8 +70,24 @@ async fn ws_handler(
     } else {
         return (StatusCode::FORBIDDEN, "Unknown User agent").into_response();
     };
+
     println!("`{user_agent}` at {addr} connected.");
+    println!("Cookies:\n{:?}", cookies.list());
+
+    let owner = match cookies.get("owner_auth") {
+        Some(cookie) => {
+            match validate_owner_token(server.ws_state, &addr, user_agent, cookie.value().into()) {
+                None => {
+                    cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
+                    None
+                }
+                local_user => local_user,
+            }
+        }
+        None => None,
+    };
+
     ws.on_upgrade(move |socket| async move {
-        validate_and_handle_client(server.ws_state, socket, addr, user_agent).await;
+        validate_and_handle_client(server.ws_state, socket, addr, owner).await;
     })
 }

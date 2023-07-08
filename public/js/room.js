@@ -70,10 +70,8 @@ let waitingForUser = {
 
 let currentCC = null;
 
-let authOpt = localStorage.getItem("local.auth_name");
-if (authOpt !== null) {
+if (typeof autoConnect === "boolean" && autoConnect) {
     joinRoomForm.style = "display: None;";
-    nameEl.value = authOpt;
     connectToServer();
 }
 
@@ -116,13 +114,6 @@ const handleMessage = function (message) {
             }
 
             globalThis.last_video_data = video_data;
-            break;
-        case "auth_name":
-            localStorage.setItem("local.auth_name", data[0]);
-            break;
-        case "not_owner":
-            localStorage.removeItem("local.owner_auth");
-            localStorage.removeItem("local.auth_name");
             break;
         case "joined":
             console.log("Somebody joined: ");
@@ -541,27 +532,19 @@ function connectToServer() {
     const client = new WebSocket(getWsUrl(room_data.ws_path));
     client.onopen = (e) => {
         console.log("ws opened: ", e);
-        const owner_auth = localStorage.getItem("local.owner_auth");
-        let packet = new StrPacket("join_room").addArgs(room_data.room_id, name);
-        if (owner_auth !== null) {
-            packet.addArgs(owner_auth);
+        if (name.length > 0) {
+            let packet = new StrPacket("join_room").addArgs(room_data.room_id, name);
+            client.send(packet.to_str());
         }
-        client.send(packet.to_str());
     }
     client.onclose = (e) => {
         console.log("ws closed: ", e);
-        if (authOpt !== null) {
-            localStorage.removeItem("local.auth");
-        }
         const reason = e.reason.length > 0 ? e.reason : "Forced closed. Code: " + e.code;
         alert("Error: " + reason);
         window.location.assign(getPathUrl());
     };
     client.onerror = (e) => {
         console.log("ws error: ", e);
-        if (authOpt !== null) {
-            localStorage.removeItem("local.auth");
-        }
         const reason = e.reason.length > 0 ? e.reason : "Forced closed. Code: " + e.code;
         alert("Error: " + reason);
         window.location.assign(getPathUrl());
