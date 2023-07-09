@@ -28,12 +28,12 @@ use tower_cookies::Cookie;
 use tower_cookies::Cookies;
 
 use crate::basic_auth::OwnerAuth;
+use crate::basic_auth::CHECKED_AUTH_EXPIRATION;
 use crate::basic_auth::EXPIRATION;
 use crate::basic_auth::OWNER_AUTH_CHECKED_COOKIE;
 use crate::basic_auth::OWNER_AUTH_COOKIE;
 use crate::common::{utils, Id};
 use crate::server_state::ServerState;
-use crate::ws_handler::ws_state::WebSocketStateError;
 use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
 use crate::ws_handler::PLAYER_MAX;
@@ -68,6 +68,7 @@ struct JoinUser {
     room_id: Id,
     name: String,
     ws_path: String,
+    auto_connect: bool,
 }
 
 pub(super) fn routes(server_state: ServerState) -> Router {
@@ -119,6 +120,46 @@ fn parse_uuid_from_base64(id: String) -> Result<Id, impl IntoResponse> {
         Ok(ok) => Ok(ok),
     }
 }*/
+
+async fn validate_cookie(
+    cookies: Cookies,
+    user_agent: String,
+    room_id: &Id,
+    state: &ServerState,
+    addr: &SocketAddr,
+) -> bool {
+    let auth = match cookies.get(OWNER_AUTH_COOKIE) {
+        Some(cookie) => match OwnerAuth::from_token(cookie.value(), &state.ws_state.keys) {
+            Err(e) => {
+                println!("OwnerAuth Error: {}", e);
+                None
+            }
+            Ok(auth) => {
+                if !auth.is_valid_room_id(addr.ip(), &user_agent, room_id) {
+                    None
+                } else {
+                    Some(auth)
+                }
+            }
+        },
+        None => None,
+    };
+
+    if let Some(auth) = auth {
+        let checked_id = state.ws_state.add_checked_auth(auth).await;
+        let mut checked_auth_cookie =
+            Cookie::new(OWNER_AUTH_CHECKED_COOKIE, checked_id.to_string());
+        checked_auth_cookie.set_expires(
+            OffsetDateTime::now_utc() + Duration::milliseconds(CHECKED_AUTH_EXPIRATION as i64),
+        );
+        checked_auth_cookie.set_http_only(true);
+        cookies.add(checked_auth_cookie);
+        true
+    } else {
+        cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
+        false
+    }
+}
 
 async fn create(
     cookies: Cookies,
@@ -174,14 +215,27 @@ async fn create(
 }
 
 async fn join(
+    cookies: Cookies,
     State(state): State<ServerState>,
+    user_agent: Option<TypedHeader<headers::UserAgent>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(join_room_payload): Json<JoinRoomPayload>,
-) -> Result<Json<JoinUser>, WebSocketStateError> {
-    let (room_id, name, ws_path) = state.ws_state.verify_room(join_room_payload.room_id)?;
+) -> Result<Json<JoinUser>, impl IntoResponse> {
+    let user_agent = if let Some(TypedHeader(user_agent)) = user_agent {
+        user_agent.to_string()
+    } else {
+        return Err((StatusCode::FORBIDDEN, "Unknown User agent").into_response());
+    };
+    let (room_id, name, ws_path) = state
+        .ws_state
+        .verify_room(join_room_payload.room_id)
+        .map_err(|e| e.into_response())?;
+    let auto_connect = validate_cookie(cookies, user_agent, &room_id, &state, &addr).await;
     Ok(Json(JoinUser {
         room_id,
         name,
         ws_path,
+        auto_connect,
     }))
 }
 
@@ -218,35 +272,7 @@ async fn join_direct(
         }
     };
 
-    let auth = match cookies.get("owner_auth") {
-        Some(cookie) => match OwnerAuth::from_token(cookie.value(), &state.ws_state.keys) {
-            Err(e) => {
-                println!("OwnerAuth Error: {}", e);
-                None
-            }
-            Ok(auth) => {
-                if !auth.is_valid_room_id(addr.ip(), &user_agent, &room_id) {
-                    None
-                } else {
-                    Some(auth)
-                }
-            }
-        },
-        None => None,
-    };
-
-    let auto_connect = if let Some(auth) = auth {
-        let checked_id = state.ws_state.add_checked_auth(auth).await;
-        let mut checked_auth_cookie =
-            Cookie::new(OWNER_AUTH_CHECKED_COOKIE, checked_id.to_string());
-        checked_auth_cookie.set_expires(OffsetDateTime::now_utc() + Duration::minutes(5));
-        checked_auth_cookie.set_http_only(true);
-        cookies.add(checked_auth_cookie);
-        true
-    } else {
-        cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
-        false
-    };
+    let auto_connect = validate_cookie(cookies, user_agent, &room_id, &state, &addr).await;
 
     file = file
         .replace(

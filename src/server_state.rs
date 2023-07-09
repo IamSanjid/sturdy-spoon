@@ -36,6 +36,9 @@ impl ServerState {
         ])));
 
         let ws_state = Box::leak(Box::new(WsState::default()));
+        tokio::spawn(async {
+            ws_state.update().await;
+        });
         Self { ws_state, web_dirs }
     }
 

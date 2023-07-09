@@ -9,7 +9,8 @@ use tokio::sync::{Notify, RwLock};
 use internal_server_error::InternalServerError;
 use thiserror::Error;
 
-use crate::basic_auth::{Keys, OwnerAuth};
+use crate::basic_auth::{Keys, OwnerAuth, CHECKED_AUTH_EXPIRATION};
+use crate::common::utils::get_elapsed_milis;
 use crate::common::{get_new_id, HashContainer, Id};
 use crate::sturdy_ws::{CloseCode, CloseFrame, WebSocketMessage};
 
@@ -45,7 +46,7 @@ pub enum WebSocketStateError {
 pub struct WsState {
     pub(super) users: HashContainer<UserState>,
     pub(super) rooms: HashContainer<RoomState>,
-    pub(super) checked_auth_ids: HashMap<Id, OwnerAuth>,
+    pub(super) checked_auth_ids: HashMap<Id, (OwnerAuth, u128)>,
     pub keys: Keys,
 }
 
@@ -56,6 +57,7 @@ impl Default for WsState {
                 .unwrap_or("ChudiGBoBDudu42096546".into())
                 .as_bytes(),
         );
+
         Self {
             users: HashContainer::with_capacity(20),
             rooms: HashContainer::with_capacity(10),
@@ -66,6 +68,17 @@ impl Default for WsState {
 }
 
 impl WsState {
+    pub async fn update(&self) {
+        let current_elapsed_time = get_elapsed_milis();
+        self.checked_auth_ids
+            .retain_async(|_, (_, start_time)| *start_time > current_elapsed_time)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(
+            CHECKED_AUTH_EXPIRATION as u64,
+        ))
+        .await;
+    }
+
     pub async fn create_room(
         &'static self,
         data: VideoData,
@@ -161,12 +174,12 @@ impl WsState {
         Ok(())
     }
 
-    pub async fn remove_checked_auth<F: FnOnce(&mut OwnerAuth) -> bool>(
+    pub async fn remove_checked_auth<F: FnOnce(&mut (OwnerAuth, u128)) -> bool>(
         &self,
         id: Id,
         condition: F,
     ) -> Result<OwnerAuth, WebSocketStateError> {
-        let Some((_, owner_auth)) = self.checked_auth_ids.remove_if_async(&id, condition).await else {
+        let Some((_, (owner_auth, _))) = self.checked_auth_ids.remove_if_async(&id, condition).await else {
             return Err(WebSocketStateError::NoOwner);
         };
 
@@ -175,7 +188,13 @@ impl WsState {
 
     pub async fn add_checked_auth(&self, owner_auth: OwnerAuth) -> Id {
         let id = get_new_id();
-        let _ = self.checked_auth_ids.insert_async(id, owner_auth).await;
+        let _ = self
+            .checked_auth_ids
+            .insert_async(
+                id,
+                (owner_auth, get_elapsed_milis() + CHECKED_AUTH_EXPIRATION),
+            )
+            .await;
         id
     }
 }

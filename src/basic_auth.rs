@@ -20,6 +20,8 @@ impl Keys {
 }
 
 pub const EXPIRATION: u128 = 2 * 3600 * 1000; // 2 hours
+pub const CHECKED_AUTH_EXPIRATION: u128 = 5 * 60 * 1000; // 5mins
+
 pub const OWNER_AUTH_COOKIE: &str = "owner_auth";
 pub const OWNER_AUTH_CHECKED_COOKIE: &str = "checked_auth";
 

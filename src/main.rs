@@ -80,7 +80,7 @@ async fn ws_handler(
             Ok(id) => {
                 match server
                     .ws_state
-                    .remove_checked_auth(id, |v| v.is_valid(addr.ip(), &user_agent))
+                    .remove_checked_auth(id, |(v, _)| v.is_valid(addr.ip(), &user_agent))
                     .await
                     .ok()
                 {
