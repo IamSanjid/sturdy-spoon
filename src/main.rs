@@ -85,7 +85,7 @@ async fn ws_handler(
                     .ok()
                 {
                     None => {
-                        cookies.remove(Cookie::new(OWNER_AUTH_COOKIE, ""));
+                        cookies.remove(Cookie::named(OWNER_AUTH_COOKIE));
                         None
                     }
                     v => v,
@@ -94,7 +94,7 @@ async fn ws_handler(
         },
         None => None,
     };
-    cookies.remove(Cookie::new(OWNER_AUTH_CHECKED_COOKIE, ""));
+    cookies.remove(Cookie::named(OWNER_AUTH_CHECKED_COOKIE));
 
     ws.on_upgrade(move |socket| async move {
         validate_and_handle_client(server.ws_state, socket, addr, owner).await;

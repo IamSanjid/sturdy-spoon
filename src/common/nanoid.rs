@@ -9,7 +9,8 @@ impl std::fmt::Display for LengthNotMatched {
     }
 }
 
-const NANOID_BYTES_LEN: usize = 12;
+// To nicely align it
+const NANOID_BYTES_LEN: usize = std::mem::size_of::<usize>() * 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
@@ -17,7 +18,7 @@ pub struct NanoId([u8; NANOID_BYTES_LEN]);
 
 impl NanoId {
     pub fn new() -> Self {
-        // It guarantees it will generete 12 u8(s)
+        // It guarantees it will generete "sizeof(usize) * 2" u8(s)
         let nanoid_str = nanoid::nanoid!(NANOID_BYTES_LEN);
         let mut nanoid: [u8; NANOID_BYTES_LEN] = [0; NANOID_BYTES_LEN];
         nanoid.copy_from_slice(nanoid_str.as_bytes());

@@ -34,6 +34,7 @@ use crate::basic_auth::OWNER_AUTH_CHECKED_COOKIE;
 use crate::basic_auth::OWNER_AUTH_COOKIE;
 use crate::common::{utils, Id};
 use crate::server_state::ServerState;
+use crate::ws_handler::PlayerType;
 use crate::ws_handler::VideoData;
 use crate::ws_handler::PERMISSION_CONTROLLABLE;
 use crate::ws_handler::PLAYER_MAX;
@@ -47,9 +48,9 @@ struct CreateRoomPayload {
     creator_name: String,
     video_url: String,
     cc_url: String,
-    max_users: isize,
+    max_users: i32,
     global_control: bool,
-    player_index: usize,
+    player_index: PlayerType,
 }
 
 #[derive(Serialize)]
@@ -187,7 +188,7 @@ async fn create(
         data.set_permission(PERMISSION_CONTROLLABLE)
     }
 
-    let max_users = create_room_payload.max_users.abs() as usize;
+    let max_users = create_room_payload.max_users.abs() as u32;
     let (id, ws_path) = state
         .ws_state
         .create_room(data, create_room_payload.name, max_users)

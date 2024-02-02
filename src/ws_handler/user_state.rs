@@ -4,6 +4,7 @@ use std::{
     net::SocketAddr,
     ops::{ControlFlow, Deref},
     str::FromStr,
+    sync::Arc,
 };
 
 use futures_util::StreamExt;
@@ -12,15 +13,16 @@ use thiserror::Error;
 use tokio::sync::{mpsc, RwLock};
 
 use super::{
-    ws_state::WsState, BMsgSender, Permission, VideoData, WSMsgSender, MAX_VIDEO_LEN,
-    PERMISSION_ALL, PERMISSION_CONTROLLABLE, STATE_MAX,
+    room_state::RoomState, ws_state::WsState, Permission, PermissionType, StateType, VideoData,
+    WSMsgSender, MAX_VIDEO_LEN, PERMISSION_ALL, PERMISSION_CONTROLLABLE, STATE_MAX,
 };
 use crate::{
     basic_auth::OwnerAuth,
     common::Id,
-    sturdy_ws::{CloseFrame, Message, WebSocket, WebSocketMessage},
+    sturdy_ws::{ws_stream::SplitStream, CloseFrame, Message, WebSocket, WebSocketMessage},
     ws_handler::{
-        ws_state::WebSocketStateError, CLIENT_TIMEOUT, STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT,
+        room_state::room_shutdown_gracefully, ws_state::WebSocketStateError, CLIENT_TIMEOUT,
+        STATE_PAUSE, STATE_PLAY, SYNC_TIMEOUT,
     },
 };
 
@@ -53,11 +55,10 @@ pub(super) struct UserState {
     pub tx: WSMsgSender,
 }
 
-pub struct LocalUser {
+struct LocalUserState {
     pub name: String,
     pub id: Id,
-    pub room_id: Id,
-    pub permission: Permission,
+    pub room_state: Arc<RoomState>,
 }
 
 pub struct StringPacket {
@@ -110,7 +111,7 @@ impl Into<WebSocketMessage> for StringPacket {
     }
 }
 
-fn video_data_json(data: &VideoData, permission: usize) -> String {
+fn video_data_json(data: &VideoData, permission: PermissionType) -> String {
     json!({
         "url": data.get_url(),
         "cc_url": data.get_cc_url(),
@@ -123,11 +124,18 @@ fn video_data_json(data: &VideoData, permission: usize) -> String {
 }
 
 // TODO: Implement something like `StringPacket`.
+#[inline]
 fn check_str_packet<'a>(input_str: &'a str) -> Option<(&'a str, &'a str)> {
-    let Some(input_str) = input_str.strip_prefix("||-=-||") else { return None; };
+    let Some(input_str) = input_str.strip_prefix("||-=-||") else {
+        return None;
+    };
     let mut full_data = input_str.split("-=-");
-    let Some(data_type) = full_data.next() else { return None; };
-    let Some(data) = full_data.next() else { return None; };
+    let Some(data_type) = full_data.next() else {
+        return None;
+    };
+    let Some(data) = full_data.next() else {
+        return None;
+    };
     Some((data_type, data))
 }
 
@@ -135,28 +143,44 @@ async fn verify_join_msg(
     msg: Message,
     ws_state: &'static WsState,
     who: &SocketAddr,
-) -> Result<LocalUser, ValidationError> {
+) -> Result<(LocalUserState, Permission), ValidationError> {
     match msg {
         Message::Text(t) => {
             println!(">>> {}: {}", who, &t);
-            let Some((data_type, data)) = check_str_packet(&t) else { return Err(ValidationError::InvalidPacket); };
+            let Some((data_type, data)) = check_str_packet(&t) else {
+                return Err(ValidationError::InvalidPacket);
+            };
             match data_type {
                 "join_room" => {
                     let mut data = data.split("|.|");
-                    let Some(room_id) = data.next() else { return Err(ValidationError::InvalidPacket); };
-                    let Some(name) = data.next() else { return Err(ValidationError::InvalidPacket); };
+                    let Some(room_id) = data.next() else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
+                    let Some(name) = data.next() else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
 
-                    let Ok(room_id) = Id::from_str(room_id) else { return Err(ValidationError::InvalidPacket); };
+                    let Ok(room_id) = Id::from_str(room_id) else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
 
                     println!("Trying to join room: {}", room_id);
 
-                    let room_data = ws_state
-                        .get_room_data(room_id)
-                        .map_err(ValidationError::from)?;
-                    let room_data = room_data.read().await;
+                    let room = ws_state.get_room(room_id).map_err(ValidationError::from)?;
+                    let room_data = room.data.read().await;
                     return ws_state
-                        .join_room(room_id, name.to_owned(), room_data.permission)
-                        .map_err(ValidationError::from);
+                        .join_room(room_id)
+                        .map_err(ValidationError::from)
+                        .map(|(id, room_state)| {
+                            (
+                                LocalUserState {
+                                    name: name.to_owned(),
+                                    id,
+                                    room_state,
+                                },
+                                room_data.get_permission(),
+                            )
+                        });
                 }
                 _ => return Err(ValidationError::InvalidPacket),
             }
@@ -168,7 +192,8 @@ async fn verify_join_msg(
 async fn user_handle(
     socket: WebSocket,
     who: SocketAddr,
-    mut local_data: LocalUser,
+    local_data: LocalUserState,
+    permission: Permission,
     ws_state: &'static WsState,
 ) {
     let id = local_data.id;
@@ -181,33 +206,27 @@ async fn user_handle(
     let _ = ws_state.users.insert_async(id, user).await;
 
     let name = local_data.name.clone();
-    let current_room_id = local_data.room_id;
-    let Some((exit_noti, data, broadcast_tx)) = ws_state.rooms
-        .read(&current_room_id, |_, v| {
-            (v.exit_notify.clone(), v.data.clone(), v.broadcast_tx.clone())
-        }) else {
-            return;
-        };
+    let current_room_id = local_data.room_state.id;
 
     let msg: WebSocketMessage = StringPacket::new("joined")
         .arg(name.clone())
         .arg(id.to_string())
         .into();
-    let _ = broadcast_tx.send(msg.into_server_shared_bytes());
+    let _ = local_data
+        .room_state
+        .broadcast_tx
+        .send(msg.into_server_shared_bytes());
 
-    let r_data = data.read().await;
-    let data_str = StringPacket::new("video_data").arg(video_data_json(
-        r_data.deref(),
-        local_data.permission.into(),
-    ));
-    let _ = dm_tx.send(data_str.into());
-    drop(r_data);
+    {
+        let r_data = local_data.room_state.data.read().await;
+        let data_str =
+            StringPacket::new("video_data").arg(video_data_json(r_data.deref(), permission.into()));
+        let _ = dm_tx.send(data_str.into());
+        drop(r_data);
+    }
+    let mut broadcast_rx = local_data.room_state.broadcast_tx.subscribe();
 
-    // get the notified future before starting the tasks..
-    let exit_notif = exit_noti.notified();
-    let mut broadcast_rx = broadcast_tx.subscribe();
-
-    let (socket, mut receiver) = socket.sock_split();
+    let (socket, receiver) = socket.sock_split();
     let mut send_task = tokio::spawn(async move {
         loop {
             let msg = tokio::select! {
@@ -238,85 +257,141 @@ async fn user_handle(
         }
     });
 
-    let mut recv_task = tokio::spawn(async move {
-        let mut missed_pings = 0;
-        loop {
-            let msg = tokio::select! {
-                msg = receiver.next() => {
-                    let Some(Ok(msg)) = msg else {
-                        break;
-                    };
-                    Some(msg)
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => None
-            };
-            if let Ok(read_data) = data.try_read() {
-                drop(read_data); // Must drop it otherwise dead lock...
-                data.write().await.update_time();
-            }
-            if let Some(msg) = msg {
-                let ControlFlow::Continue(processed) = process_message(msg, (&broadcast_tx, &dm_tx), &data, &mut local_data).await else {
-                    break;
-                };
-                if processed {
-                    missed_pings = 0;
-                }
-                continue;
-            }
-            missed_pings += 1;
-            if missed_pings >= MAX_MISSED_PING {
-                break;
-            }
-        }
-    });
+    let mut recv_task = if permission.has_permission(PERMISSION_CONTROLLABLE) {
+        tokio::spawn(recv_task_privileged(receiver, dm_tx, local_data))
+    } else {
+        tokio::spawn(recv_task_normal(receiver, dm_tx, local_data, permission))
+    };
 
     tokio::select! {
         _ = (&mut recv_task) => send_task.abort(),
         _ = (&mut send_task) => recv_task.abort(),
-        _ = exit_notif => {
-            send_task.abort();
-            recv_task.abort();
-        }
     }
 
-    let Some(users_remained) = ws_state.rooms.read(&current_room_id, |_, v| v.user_left()) else {
+    let Some(room) = ws_state.rooms.read(&current_room_id, |_, v| v.clone()) else {
         return;
     };
 
-    if !users_remained {
-        let _ = ws_state.close_room(current_room_id);
+    if !room.user_left() {
+        room_shutdown_gracefully(current_room_id, ws_state).await;
     } else {
-        ws_state.rooms.read(&current_room_id, |_, v| {
-            let msg: WebSocketMessage = StringPacket::new("left")
-                .arg(name)
-                .arg(id.to_string())
-                .into();
+        let msg: WebSocketMessage = StringPacket::new("left")
+            .arg(name)
+            .arg(id.to_string())
+            .into();
 
-            v.broadcast_tx.send(msg.into_server_shared_bytes())
-        });
+        let _ = room.broadcast_tx.send(msg.into_server_shared_bytes());
     }
 
     ws_state.users.remove_async(&id).await;
     println!("{} left! - id: {}", who, id);
 }
 
-#[inline(always)]
-fn check_permission_or_send_current<'a>(
-    dm_tx: &'a WSMsgSender,
-    user: &'a LocalUser,
-    state_data: &'a RwLock<VideoData>,
-) -> impl std::future::Future<Output = ControlFlow<Option<String>, bool>> + 'a {
-    async {
-        if user.permission.has_permission(PERMISSION_CONTROLLABLE) {
-            return ControlFlow::Continue(true);
-        }
-        let data = state_data.read().await;
-        let data_str = StringPacket::new("video_data")
-            .arg(video_data_json(data.deref(), user.permission.into()));
-        if let Err(err) = dm_tx.send(data_str.into()) {
-            return ControlFlow::Break(Some(err.to_string()));
+async fn recv_task_privileged(
+    mut receiver: SplitStream<WebSocket>,
+    dm_tx: WSMsgSender,
+    mut local_data: LocalUserState,
+) {
+    let mut missed_pings = 0;
+    loop {
+        let msg = tokio::select! {
+            msg = receiver.next() => {
+                let Some(Ok(msg)) = msg else {
+                    break;
+                };
+                Some(msg)
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => None
         };
-        return ControlFlow::Continue(false);
+        if let Ok(read_data) = local_data.room_state.data.try_read() {
+            drop(read_data); // Must drop it otherwise dead lock...
+            local_data.room_state.data.write().await.update_time();
+        }
+        if let Some(msg) = msg {
+            match msg {
+                Message::Text(input_str) => {
+                    println!(">>> {} sent str: {:?}", local_data.name, input_str);
+                    match process_privileged_message(input_str, &dm_tx, &mut local_data).await {
+                        ControlFlow::Break(_) => {
+                            // TODO: Print why we're breaking..
+                        }
+                        ControlFlow::Continue(processed) => {
+                            if processed {
+                                missed_pings = 0;
+                            }
+                            continue;
+                        }
+                    };
+                }
+                Message::Close(_) => {
+                    // TODO: Print the close reason.
+                    break;
+                }
+                _ => {}
+            }
+        }
+        missed_pings += 1;
+        if missed_pings >= MAX_MISSED_PING {
+            break;
+        }
+    }
+}
+
+async fn recv_task_normal(
+    mut receiver: SplitStream<WebSocket>,
+    dm_tx: WSMsgSender,
+    local_data: LocalUserState,
+    permission: Permission,
+) {
+    let mut missed_pings = 0;
+    loop {
+        let msg = tokio::select! {
+            msg = receiver.next() => {
+                let Some(Ok(msg)) = msg else {
+                    break;
+                };
+                Some(msg)
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)) => None
+        };
+        if let Ok(read_data) = local_data.room_state.data.try_read() {
+            drop(read_data); // Must drop it otherwise dead lock...
+            local_data.room_state.data.write().await.update_time();
+        }
+        if let Some(msg) = msg {
+            match msg {
+                Message::Text(input_str) => {
+                    println!(">>> {} sent str: {:?}", local_data.name, input_str);
+                    match process_normal_message(
+                        input_str,
+                        &dm_tx,
+                        &local_data.room_state.data,
+                        permission,
+                    )
+                    .await
+                    {
+                        ControlFlow::Break(_) => {
+                            // TODO: Print why we're breaking..
+                        }
+                        ControlFlow::Continue(processed) => {
+                            if processed {
+                                missed_pings = 0;
+                            }
+                            continue;
+                        }
+                    };
+                }
+                Message::Close(_) => {
+                    // TODO: Print the close reason.
+                    break;
+                }
+                _ => {}
+            }
+        }
+        missed_pings += 1;
+        if missed_pings >= MAX_MISSED_PING {
+            break;
+        }
     }
 }
 
@@ -336,11 +411,11 @@ fn parse_time<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool, 
 }
 
 #[inline(always)]
-fn parse_state<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool, usize> {
+fn parse_state<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool, StateType> {
     let Some(state) = data.next() else {
         return ControlFlow::Break(false);
     };
-    let Ok(state) = state.parse::<usize>() else {
+    let Ok(state) = state.parse::<StateType>() else {
         return ControlFlow::Break(false);
     };
     if state > STATE_MAX {
@@ -349,151 +424,170 @@ fn parse_state<'a>(mut data: impl Iterator<Item = &'a str>) -> ControlFlow<bool,
     return ControlFlow::Continue(state);
 }
 
-async fn process_message(
-    msg: Message,
-    (broadcast_tx, dm_tx): (&BMsgSender, &WSMsgSender),
-    state_data: &RwLock<VideoData>,
-    local_data: &mut LocalUser,
+async fn process_privileged_message(
+    input_str: String,
+    dm_tx: &WSMsgSender,
+    local_data: &mut LocalUserState,
 ) -> ControlFlow<Option<String>, bool> {
-    // TODO: make permission `settable` for every user individually...
-    match msg {
-        Message::Text(input_str) => {
-            println!(">>> {} sent str: {:?}", local_data.name, input_str);
-            let Some((data_type, data)) = check_str_packet(&input_str) else { return ControlFlow::Continue(false); };
+    let Some((data_type, data)) = check_str_packet(&input_str) else {
+        return ControlFlow::Continue(false);
+    };
 
-            match data_type {
-                "state" => {
-                    let mut data = data.split("|.|");
-                    let time = match parse_time(&mut data) {
-                        ControlFlow::Break(con) => return ControlFlow::Continue(!con),
-                        ControlFlow::Continue(time) => time,
-                    };
+    let state_data = &local_data.room_state.data;
+    let broadcast_tx = &local_data.room_state.broadcast_tx;
 
-                    let video_state = match parse_state(&mut data) {
-                        ControlFlow::Break(con) => return ControlFlow::Continue(!con),
-                        ControlFlow::Continue(state) => state,
-                    };
+    match data_type {
+        "state" => {
+            let mut data = data.split("|.|");
+            let time = match parse_time(&mut data) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(time) => time,
+            };
 
-                    let read_state_data = state_data.read().await;
-                    let needs_update = video_state != read_state_data.get_state()
-                        || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128)
-                            > SYNC_TIMEOUT;
-                    if needs_update {
-                        if local_data
-                            .permission
-                            .has_permission(PERMISSION_CONTROLLABLE)
-                        {
-                            {
-                                drop(read_state_data);
-                                let mut state_data = state_data.write().await;
-                                state_data.set_state(time, video_state);
-                            }
+            let video_state = match parse_state(&mut data) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(state) => state,
+            };
 
-                            let msg: WebSocketMessage = StringPacket::new("state")
-                                .arg(time.to_string())
-                                .arg(video_state.to_string())
-                                .into();
-                            if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
-                                return ControlFlow::Break(Some(err.to_string()));
-                            }
-                        } else {
-                            let msg = StringPacket::new("state")
-                                .arg(read_state_data.get_time().to_string())
-                                .arg(read_state_data.get_state().to_string());
-                            if let Err(err) = dm_tx.send(msg.into()) {
-                                return ControlFlow::Break(Some(err.to_string()));
-                            }
-                        }
-                    } else {
-                        let msg = StringPacket::new("state_ok");
-                        if let Err(err) = dm_tx.send(msg.into()) {
-                            return ControlFlow::Break(Some(err.to_string()));
-                        }
-                    }
-                    return ControlFlow::Continue(true);
+            let read_state_data = state_data.read().await;
+            let needs_update = video_state != read_state_data.get_state()
+                || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128)
+                    > SYNC_TIMEOUT;
+            if needs_update {
+                {
+                    drop(read_state_data);
+                    let mut state_data = state_data.write().await;
+                    state_data.set_state(time, video_state);
                 }
-                "seek" => {
-                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
-                        return ControlFlow::Continue(true);
-                    }
 
-                    let time = match parse_time(&mut data.split("|.|")) {
-                        ControlFlow::Break(con) => return ControlFlow::Continue(!con),
-                        ControlFlow::Continue(time) => time,
-                    };
-
-                    {
-                        let mut state_data = state_data.write().await;
-                        state_data.set_time(time);
-                    }
-                    println!("{}: {} at {}ms", local_data.name, data_type, time);
-
-                    let msg: WebSocketMessage =
-                        StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
-                        return ControlFlow::Break(Some(err.to_string()));
-                    }
+                let msg: WebSocketMessage = StringPacket::new("state")
+                    .arg(time.to_string())
+                    .arg(video_state.to_string())
+                    .into();
+                if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
+                    return ControlFlow::Break(Some(err.to_string()));
                 }
-                "play" => {
-                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
-                        return ControlFlow::Continue(true);
-                    }
-
-                    let time = match parse_time(&mut data.split("|.|")) {
-                        ControlFlow::Break(con) => return ControlFlow::Continue(!con),
-                        ControlFlow::Continue(time) => time,
-                    };
-
-                    {
-                        let mut state_data = state_data.write().await;
-                        state_data.set_state(time, STATE_PLAY);
-                    }
-
-                    println!("{}: {} at {}ms", local_data.name, data_type, time);
-
-                    let msg: WebSocketMessage =
-                        StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
-                        return ControlFlow::Break(Some(err.to_string()));
-                    }
+            } else {
+                let msg = StringPacket::new("state_ok");
+                if let Err(err) = dm_tx.send(msg.into()) {
+                    return ControlFlow::Break(Some(err.to_string()));
                 }
-                "pause" => {
-                    if !check_permission_or_send_current(dm_tx, &local_data, state_data).await? {
-                        return ControlFlow::Continue(true);
-                    }
+            }
+            return ControlFlow::Continue(true);
+        }
+        "seek" => {
+            let time = match parse_time(&mut data.split("|.|")) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(time) => time,
+            };
 
-                    let time = match parse_time(&mut data.split("|.|")) {
-                        ControlFlow::Break(con) => return ControlFlow::Continue(!con),
-                        ControlFlow::Continue(time) => time,
-                    };
+            {
+                let mut state_data = state_data.write().await;
+                state_data.set_time(time);
+            }
+            println!("{}: {} at {}ms", local_data.name, data_type, time);
 
-                    {
-                        let mut state_data = state_data.write().await;
-                        state_data.set_state(time, STATE_PAUSE);
-                    }
-
-                    println!("{}: {} at {}ms", local_data.name, data_type, time);
-
-                    let msg: WebSocketMessage =
-                        StringPacket::new(data_type).arg(time.to_string()).into();
-                    if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
-                        return ControlFlow::Break(Some(err.to_string()));
-                    }
-                }
-                _ => {}
+            let msg: WebSocketMessage = StringPacket::new(data_type).arg(time.to_string()).into();
+            if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
+                return ControlFlow::Break(Some(err.to_string()));
             }
         }
-        Message::Close(c) => {
-            let reason = if let Some(cf) = c {
-                Some(format!("code {}, reason `{}`", cf.code, cf.reason))
-            } else {
-                None
+        "play" => {
+            let time = match parse_time(&mut data.split("|.|")) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(time) => time,
             };
-            return ControlFlow::Break(reason);
+
+            {
+                let mut state_data = state_data.write().await;
+                state_data.set_state(time, STATE_PLAY);
+            }
+
+            println!("{}: {} at {}ms", local_data.name, data_type, time);
+
+            let msg: WebSocketMessage = StringPacket::new(data_type).arg(time.to_string()).into();
+            if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
+                return ControlFlow::Break(Some(err.to_string()));
+            }
+        }
+        "pause" => {
+            let time = match parse_time(&mut data.split("|.|")) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(time) => time,
+            };
+
+            {
+                let mut state_data = state_data.write().await;
+                state_data.set_state(time, STATE_PAUSE);
+            }
+
+            println!("{}: {} at {}ms", local_data.name, data_type, time);
+
+            let msg: WebSocketMessage = StringPacket::new(data_type).arg(time.to_string()).into();
+            if let Err(err) = broadcast_tx.send(msg.into_server_shared_bytes()) {
+                return ControlFlow::Break(Some(err.to_string()));
+            }
         }
         _ => {}
     }
-    ControlFlow::Continue(false)
+
+    return ControlFlow::Continue(false);
+}
+
+async fn process_normal_message(
+    input_str: String,
+    dm_tx: &WSMsgSender,
+    state_data: &RwLock<VideoData>,
+    permission: Permission,
+) -> ControlFlow<Option<String>, bool> {
+    let Some((data_type, data)) = check_str_packet(&input_str) else {
+        return ControlFlow::Continue(false);
+    };
+
+    match data_type {
+        "state" => {
+            let mut data = data.split("|.|");
+            let time = match parse_time(&mut data) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(time) => time,
+            };
+
+            let video_state = match parse_state(&mut data) {
+                ControlFlow::Break(con) => return ControlFlow::Continue(!con),
+                ControlFlow::Continue(state) => state,
+            };
+
+            let read_state_data = state_data.read().await;
+            let needs_update = video_state != read_state_data.get_state()
+                || ((time as isize).abs_diff(read_state_data.get_time() as isize) as u128)
+                    > SYNC_TIMEOUT;
+            if needs_update {
+                let msg = StringPacket::new("state")
+                    .arg(read_state_data.get_time().to_string())
+                    .arg(read_state_data.get_state().to_string());
+                if let Err(err) = dm_tx.send(msg.into()) {
+                    return ControlFlow::Break(Some(err.to_string()));
+                }
+            } else {
+                let msg = StringPacket::new("state_ok");
+                if let Err(err) = dm_tx.send(msg.into()) {
+                    return ControlFlow::Break(Some(err.to_string()));
+                }
+            }
+            return ControlFlow::Continue(true);
+        }
+        "pause" | "play" | "seek" => {
+            let data = state_data.read().await;
+            let data_str = StringPacket::new("video_data")
+                .arg(video_data_json(data.deref(), permission.into()));
+            if let Err(err) = dm_tx.send(data_str.into()) {
+                return ControlFlow::Break(Some(err.to_string()));
+            };
+            return ControlFlow::Continue(true);
+        }
+        _ => {}
+    }
+    return ControlFlow::Continue(false);
 }
 
 pub async fn validate_and_handle_client(
@@ -502,13 +596,16 @@ pub async fn validate_and_handle_client(
     who: SocketAddr,
     owner: Option<OwnerAuth>,
 ) {
-    let local_user = if let Some(owner_auth) = owner {
-        match ws_state.join_room(
-            owner_auth.room_id,
-            owner_auth.username,
-            PERMISSION_ALL.into(),
-        ) {
-            Ok(local_user) => local_user,
+    let (local_user, permision) = if let Some(owner_auth) = owner {
+        match ws_state.join_room(owner_auth.room_id) {
+            Ok((id, room_state)) => (
+                LocalUserState {
+                    name: owner_auth.username,
+                    id,
+                    room_state,
+                },
+                PERMISSION_ALL.into(),
+            ),
             Err(_) => return,
         }
     } else {
@@ -537,5 +634,5 @@ pub async fn validate_and_handle_client(
         }
     };
 
-    user_handle(socket, who, local_user, ws_state).await;
+    user_handle(socket, who, local_user, permision, ws_state).await;
 }

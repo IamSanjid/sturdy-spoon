@@ -1,8 +1,6 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio;
-use tokio::sync::Notify;
 use tokio::sync::RwLock;
 
 use crate::common::Id;
@@ -11,16 +9,13 @@ use super::ws_state::WsState;
 use super::VideoData;
 use super::{BMsgSender, CLIENT_TIMEOUT};
 
-#[derive(Clone)]
 pub struct RoomState {
-    #[allow(unused)]
+    pub(super) data: RwLock<VideoData>,
     pub(super) id: Id,
     pub(super) name: String,
     pub(super) broadcast_tx: BMsgSender,
-    pub(super) exit_notify: Arc<Notify>,
-    pub(super) data: Arc<RwLock<VideoData>>,
-    pub(super) remaining_users: Arc<AtomicUsize>,
-    pub(super) max_users: usize,
+    pub(super) remaining_users: AtomicU32,
+    pub(super) max_users: u32,
 }
 
 impl RoomState {
@@ -48,20 +43,13 @@ impl RoomState {
     pub(super) fn is_empty(&self) -> bool {
         self.remaining_users.load(Ordering::Relaxed) == self.max_users
     }
-
-    pub(super) fn close(&self) {
-        self.exit_notify.notify_waiters();
-    }
 }
 
-pub(super) async fn room_handle(room_id: Id, exit_notif: Arc<Notify>, ws_state: &'static WsState) {
-    loop {
-        exit_notif.notified().await;
-        tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)).await;
-        let res = ws_state.rooms.read(&room_id, |_, v| v.is_empty());
-        if matches!(res, None) || matches!(res, Some(true)) {
-            break;
-        }
+pub(super) async fn room_shutdown_gracefully(room_id: Id, ws_state: &'static WsState) {
+    tokio::time::sleep(std::time::Duration::from_millis(CLIENT_TIMEOUT)).await;
+    let res = ws_state.rooms.read(&room_id, |_, v| v.is_empty());
+    if matches!(res, Some(true)) {
+        return;
     }
 
     println!("[ROOM UPDATE] Removing room id: {}", room_id);

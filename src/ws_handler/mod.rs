@@ -10,38 +10,44 @@ pub(super) type WSMsgSender =
     tokio::sync::mpsc::UnboundedSender<crate::sturdy_ws::WebSocketMessage>;
 pub(super) type BMsgSender = tokio::sync::broadcast::Sender<std::sync::Arc<[u8]>>;
 
-pub const STATE_PAUSE: usize = 0;
-pub const STATE_PLAY: usize = 1;
-pub const STATE_MAX: usize = STATE_PLAY;
+// TODO: Refactor these parts?
+pub type StateType = u8;
+pub type PermissionType = u8;
+pub type PlayerType = u8;
 
-pub const PERMISSION_RESTRICTED: usize = 0b000;
-pub const PERMISSION_CONTROLLABLE: usize = 0b001;
-pub const PERMISSION_CHANGER: usize = 0b010;
-pub const PERMISSION_ALL: usize =
+pub const STATE_PAUSE: StateType = 0;
+pub const STATE_PLAY: StateType = 1;
+pub const STATE_MAX: StateType = STATE_PLAY;
+
+pub const PERMISSION_RESTRICTED: PermissionType = 0b000;
+pub const PERMISSION_CONTROLLABLE: PermissionType = 0b001;
+pub const PERMISSION_CHANGER: PermissionType = 0b010;
+pub const PERMISSION_ALL: PermissionType =
     PERMISSION_RESTRICTED | PERMISSION_CONTROLLABLE | PERMISSION_CHANGER;
 
 #[allow(unused)]
-pub const PLAYER_JW: usize = 0;
-pub const PLAYER_NORMAL: usize = 1;
-pub const PLAYER_MAX: usize = PLAYER_NORMAL;
+pub const PLAYER_JW: PlayerType = 0;
+pub const PLAYER_NORMAL: PlayerType = 1;
+pub const PLAYER_MAX: PlayerType = PLAYER_NORMAL;
 
 pub const CLIENT_TIMEOUT: u64 = 60 * 2 * 1000; // 2 Minutes
 pub const SYNC_TIMEOUT: u128 = 5 * 1000; // 5 seconds
 pub const MAX_VIDEO_LEN: usize = 4 * 3600 * 1000; // 4 hours
 
 #[derive(Clone, Copy)]
-pub struct Permission(usize);
+// TODO: Remove permission from User
+pub struct Permission(PermissionType);
 
 impl Permission {
-    pub fn has_permission(&self, permission: usize) -> bool {
+    pub fn has_permission(&self, permission: PermissionType) -> bool {
         (self.0 & permission) == permission
     }
 
-    pub fn set_permission(&mut self, permission: usize) {
+    pub fn set_permission(&mut self, permission: PermissionType) {
         self.0 |= permission;
     }
 
-    pub fn clear_permission(&mut self, permission: usize) {
+    pub fn clear_permission(&mut self, permission: PermissionType) {
         self.0 = self.0 & !permission
     }
 }
@@ -52,44 +58,45 @@ impl Default for Permission {
     }
 }
 
-impl From<Permission> for usize {
+impl From<Permission> for PermissionType {
     fn from(value: Permission) -> Self {
         value.0
     }
 }
 
-impl From<&Permission> for usize {
+impl From<&Permission> for Permission {
     fn from(value: &Permission) -> Self {
-        value.0
+        Self(value.0)
     }
 }
 
-impl From<usize> for Permission {
-    fn from(value: usize) -> Self {
+impl From<PermissionType> for Permission {
+    fn from(value: PermissionType) -> Self {
         Self(value)
     }
 }
 
 pub struct VideoData {
+    last_time_updated: u128,
+    time: usize, // in Miliseconds
     url: String,
     cc_url: String,
-    time: usize,            // in Miliseconds
-    state: usize,           // 0: Pause, 1: Play
+    state: StateType,       // 0: Pause, 1: Play
     permission: Permission, // 0: Restricted, 1: Can control video
-    current_player: usize,
-    last_time_updated: u128,
+    current_player: PlayerType,
+    // TODO: Wasted 5 bytes...
 }
 
 impl VideoData {
-    pub fn new(url: String, cc_url: String, current_player: usize) -> Self {
+    pub fn new(url: String, cc_url: String, current_player: PlayerType) -> Self {
         Self {
+            last_time_updated: get_elapsed_milis(),
+            time: 0,
             url,
             cc_url,
-            time: 0,
-            state: 0,
-            current_player,
+            state: STATE_PAUSE,
             permission: Permission::default(),
-            last_time_updated: get_elapsed_milis(),
+            current_player,
         }
     }
 
@@ -114,12 +121,12 @@ impl VideoData {
     }
 
     #[inline]
-    pub fn get_state(&self) -> usize {
+    pub fn get_state(&self) -> StateType {
         self.state
     }
 
     #[inline]
-    pub fn set_state(&mut self, time: usize, state: usize) {
+    pub fn set_state(&mut self, time: usize, state: StateType) {
         self.state = state;
         self.time = time;
         self.last_time_updated = get_elapsed_milis();
@@ -146,12 +153,12 @@ impl VideoData {
     }
 
     #[inline]
-    pub fn get_current_player(&self) -> usize {
+    pub fn get_current_player(&self) -> PlayerType {
         self.current_player
     }
 
     #[inline]
-    pub fn set_current_player(&mut self, current_player: usize) {
+    pub fn set_current_player(&mut self, current_player: PlayerType) {
         self.current_player = current_player;
     }
 
@@ -161,17 +168,17 @@ impl VideoData {
     }
 
     #[inline]
-    pub fn has_permission(&self, permission: usize) -> bool {
+    pub fn has_permission(&self, permission: PermissionType) -> bool {
         self.permission.has_permission(permission)
     }
 
     #[inline]
-    pub fn set_permission(&mut self, permission: usize) {
+    pub fn set_permission(&mut self, permission: PermissionType) {
         self.permission.set_permission(permission);
     }
 
     #[inline]
-    pub fn clear_permission(&mut self, permission: usize) {
+    pub fn clear_permission(&mut self, permission: PermissionType) {
         self.permission.clear_permission(permission);
     }
 }

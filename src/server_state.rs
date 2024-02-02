@@ -1,7 +1,7 @@
 use axum::extract::FromRef;
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::ws_handler::ws_state::WsState;
+use crate::{basic_auth::CHECKED_AUTH_EXPIRATION, ws_handler::ws_state::WsState};
 
 pub const PUBLIC_DIR: &str = "public";
 
@@ -37,7 +37,13 @@ impl ServerState {
 
         let ws_state = Box::leak(Box::new(WsState::default()));
         tokio::spawn(async {
-            ws_state.update().await;
+            loop {
+                ws_state.update_checked_auths().await;
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    CHECKED_AUTH_EXPIRATION as u64,
+                ))
+                .await;
+            }
         });
         Self { ws_state, web_dirs }
     }
