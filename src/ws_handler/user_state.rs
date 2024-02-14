@@ -139,56 +139,6 @@ fn check_str_packet<'a>(input_str: &'a str) -> Option<(&'a str, &'a str)> {
     Some((data_type, data))
 }
 
-async fn verify_join_msg(
-    msg: Message,
-    ws_state: &'static WsState,
-    who: &SocketAddr,
-) -> Result<(LocalUserState, Permission), ValidationError> {
-    match msg {
-        Message::Text(t) => {
-            println!(">>> {}: {}", who, &t);
-            let Some((data_type, data)) = check_str_packet(&t) else {
-                return Err(ValidationError::InvalidPacket);
-            };
-            match data_type {
-                "join_room" => {
-                    let mut data = data.split("|.|");
-                    let Some(room_id) = data.next() else {
-                        return Err(ValidationError::InvalidPacket);
-                    };
-                    let Some(name) = data.next() else {
-                        return Err(ValidationError::InvalidPacket);
-                    };
-
-                    let Ok(room_id) = Id::from_str(room_id) else {
-                        return Err(ValidationError::InvalidPacket);
-                    };
-
-                    println!("Trying to join room: {}", room_id);
-
-                    let room = ws_state.get_room(room_id).map_err(ValidationError::from)?;
-                    let room_data = room.data.read().await;
-                    return ws_state
-                        .join_room(room_id)
-                        .map_err(ValidationError::from)
-                        .map(|(id, room_state)| {
-                            (
-                                LocalUserState {
-                                    name: name.to_owned(),
-                                    id,
-                                    room_state,
-                                },
-                                room_data.get_permission(),
-                            )
-                        });
-                }
-                _ => return Err(ValidationError::InvalidPacket),
-            }
-        }
-        _ => Err(ValidationError::InvalidPacket),
-    }
-}
-
 async fn user_handle(
     socket: WebSocket,
     who: SocketAddr,
@@ -588,6 +538,56 @@ async fn process_normal_message(
         _ => {}
     }
     return ControlFlow::Continue(false);
+}
+
+async fn verify_join_msg(
+    msg: Message,
+    ws_state: &'static WsState,
+    who: &SocketAddr,
+) -> Result<(LocalUserState, Permission), ValidationError> {
+    match msg {
+        Message::Text(t) => {
+            println!(">>> {}: {}", who, &t);
+            let Some((data_type, data)) = check_str_packet(&t) else {
+                return Err(ValidationError::InvalidPacket);
+            };
+            match data_type {
+                "join_room" => {
+                    let mut data = data.split("|.|");
+                    let Some(room_id) = data.next() else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
+                    let Some(name) = data.next() else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
+
+                    let Ok(room_id) = Id::from_str(room_id) else {
+                        return Err(ValidationError::InvalidPacket);
+                    };
+
+                    println!("Trying to join room: {}", room_id);
+
+                    let room = ws_state.get_room(room_id).map_err(ValidationError::from)?;
+                    let room_data = room.data.read().await;
+                    return ws_state
+                        .join_room(room_id)
+                        .map_err(ValidationError::from)
+                        .map(|(id, room_state)| {
+                            (
+                                LocalUserState {
+                                    name: name.to_owned(),
+                                    id,
+                                    room_state,
+                                },
+                                room_data.get_permission(),
+                            )
+                        });
+                }
+                _ => return Err(ValidationError::InvalidPacket),
+            }
+        }
+        _ => Err(ValidationError::InvalidPacket),
+    }
 }
 
 pub async fn validate_and_handle_client(
