@@ -275,6 +275,7 @@ async fn join_direct(
 
     let auto_connect = validate_cookie(cookies, user_agent, &room_id, &state, &addr).await;
 
+    // this is peak server side html generation ;')
     file = file
         .replace(
             "let room_data = null;",
