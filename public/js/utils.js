@@ -101,32 +101,58 @@ function makeWsClient(client) {
 function makeVideoPlayer(videoElement) {
     const videoObj = {
         inner: videoElement,
+        callbacks: {
+            "seek": [],
+            "play": [],
+            "pause": [],
+            "ready": [],
+            "error": []
+        },
+        registered_event_types: new Set(),
     };
 
     const controls = {
-        on: (event, callback) => {
-            switch (event) {
+        on: (evtType, callback) => {
+            if (!(videoObj.callbacks in evtType)) {
+                throw new Error("Unknown event type: " + evtType);
+            }
+            videoObj.callbacks[evtType].push(callback);
+
+            if (videoObj.registered_event_types.has(evtType)) {
+                return;
+            }
+
+            const defaultCallback = (...args) => {
+                for (callback in videoObj.callbacks[evtType]) {
+                    callback(...args);
+                }
+            };
+
+            switch (evtType) {
                 case "seek":
                     videoObj.inner.onseeking = () => {
                         const evt = {
                             offset: videoObj.inner.currentTime
                         }
-                        callback(evt);
+                        for (callback in videoObj.callbacks["seek"]) {
+                            callback(evt);
+                        }
                     };
                     break;
                 case "play":
-                    videoObj.inner.onplaying = callback;
+                    videoObj.inner.onplaying = defaultCallback;
                     break;
                 case "pause":
-                    videoObj.inner.onpause = callback;
+                    videoObj.inner.onpause = defaultCallback;
                     break;
                 case "ready":
-                    videoObj.inner.oncanplay = callback;
+                    videoObj.inner.oncanplay = defaultCallback;
                     break;
                 case "error":
-                    videoObj.inner.onerror = callback;
+                    videoObj.inner.onerror = defaultCallback;
                     break;
             }
+            videoObj.registered_event_types.add(evtType);
         },
         seek: (time) => {
             videoObj.inner.currentTime = time;
